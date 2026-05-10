@@ -121,6 +121,7 @@ error_logs = deque(maxlen=140)
 download_logs = deque(maxlen=200)
 video_logs = deque(maxlen=200)
 sabr_logs = deque(maxlen=200)
+h2_logs = deque(maxlen=220)
 
 RUNTIME_LOCK = threading.RLock()
 SHUTDOWN_EVENT = threading.Event()
@@ -174,15 +175,46 @@ class DashboardLogHandler(logging.Handler):
                 return
 
             is_download = any(x in low for x in (
-                "parallel download", "parallel streaming download", "download progress",
-                "download complete", "chunks",
+                "parallel download",
+                "parallel streaming download",
+                "download progress",
+                "download complete",
+                "download failed",
+                "download error",
+                "downloader",
+                "[download]",
             ))
+
+            is_h2 = (
+                " h2:" in low
+                or "[h2]" in low
+                or "h2 " in low
+                or " via h2" in low
+                or "h2 connected" in low
+                or "h2 reader loop" in low
+                or "h2 temporarily disabled" in low
+                or "h2 disabled" in low
+                or "h2 cooldown" in low
+                or "h2 stream" in low
+                or "h2 connect" in low
+                or "h2 timeout" in low
+                or "h2 front_ip" in low
+                or "front-ip signal" in low
+                or "sni_pool" in low
+                or "front_ip=" in low
+                or "relay timeout via h2" in low
+                or "relay failure detail path=h2" in low
+                or "fanout-fallback" in low
+            )
+
             is_sabr = (
                 "sabr boost" in low
                 or "youtube sabr" in low
-                or ("sabr" in low and "googlevideo" in low)
+                or "video sabr direct" in low
+                or ("sabr" in low and ("googlevideo" in low or "youtube" in low or "videoplayback" in low))
                 or ("video passthrough" in low and "googlevideo" in low and "sabr" in low)
             )
+
             is_video = (
                 is_sabr
                 or "googlevideo" in low
@@ -206,18 +238,63 @@ class DashboardLogHandler(logging.Handler):
                 or ("resp ←" in low and any(x in low for x in ("youtube", "googlevideo", "ytimg")))
                 or ("sni-rewrite tunnel" in low and any(x in low for x in ("youtube", "googlevideo", "ytimg")))
             )
-            is_error = "[error]" in low or " error " in low or "relay error" in low or "failed" in low
+
+            is_http_error = any(x in low for x in (
+                "status=400", "status=401", "status=403", "status=404", "status=408",
+                "status=409", "status=418", "status=425", "status=429",
+                "status=500", "status=501", "status=502", "status=503", "status=504",
+                "status=505", "status=507", "status=508", "status=520", "status=521",
+                "status=522", "status=523", "status=524",
+            ))
+
+            # Error tab should show real runtime/network failures.
+            # Do not treat every WARNING as an error, because some warnings are informational.
+            is_error = (
+                record.levelno >= logging.ERROR
+                or "[error]" in low
+                or " error " in low
+                or "error:" in low
+                or "hint=error" in low
+                or "relay error" in low
+                or "relay failure" in low
+                or "failure detail" in low
+                or "failed" in low
+                or " failure " in low
+                or "timeouterror" in low
+                or "timed out" in low
+                or "relay timeout" in low
+                or "h2 timeout" in low
+                or "front-ip signal: timeout" in low
+                or "detail=timeouterror" in low
+                or "connectionerror" in low
+                or "connection reset" in low
+                or "connection refused" in low
+                or "temporarily disabled" in low
+                or "front-ip signal" in low
+                or "offline_or_locked" in low
+                or is_http_error
+            )
+
+            # All / Live is a complete live stream.
+            live_logs.append(msg)
+
+            # Errors is a complete error-focused stream.
+            if is_error:
+                error_logs.append(msg)
+
+            # Traffic-specific tabs are independent.
+            # A line can appear in Live + Errors + Video/SABR when useful.
+            if is_download:
+                download_logs.append(msg)
+
+            if is_h2:
+                h2_logs.append(msg)
+
+            if is_video:
+                video_logs.append(msg)
 
             if is_sabr:
                 sabr_logs.append(msg)
-            elif is_error:
-                error_logs.append(msg)
-            elif is_video:
-                video_logs.append(msg)
-            elif is_download:
-                download_logs.append(msg)
-            else:
-                live_logs.append(msg)
         except Exception:
             pass
 
@@ -863,6 +940,7 @@ def get_suggestion_payload():
         "downloads": list(download_logs)[-100:],
         "video": list(video_logs)[-100:],
         "sabr": list(sabr_logs)[-100:],
+        "h2": list(h2_logs)[-100:] if "h2_logs" in globals() else [],
     }
     return tuner.suggest(snap, logs)
 
@@ -1088,6 +1166,18 @@ def build_stats_payload():
     snap.update(get_sabr_dashboard_stats())
     snap["sabr_summary"] = get_sabr_summary()
 
+    # Log-derived counters for dashboard/debug UI.
+    # These are rolling counters based on the in-memory dashboard log buffers.
+    snap["dashboard_log_counts"] = {
+        "live": len(live_logs),
+        "errors": len(error_logs),
+        "downloads": len(download_logs),
+        "video": len(video_logs),
+        "sabr": len(sabr_logs),
+        "h2": len(h2_logs),
+    }
+    snap["dashboard_log_errors"] = len(error_logs)
+
     if WEB_RUNTIME.get("quota_start") is None:
         WEB_RUNTIME["quota_start"] = safe_int(snap.get("quota_used"), 0)
     snap["runtime_quota_used"] = max(0, safe_int(snap.get("quota_used"), 0) - safe_int(WEB_RUNTIME.get("quota_start"), 0))
@@ -1237,6 +1327,7 @@ class StatsHandler(BaseHTTPRequestHandler):
                 "downloads": list(download_logs)[-100:],
                 "video": list(video_logs)[-100:],
                 "sabr": list(sabr_logs)[-100:],
+                "h2": list(h2_logs)[-100:],
             })
             return
 
@@ -1316,7 +1407,7 @@ class StatsHandler(BaseHTTPRequestHandler):
 
     def handle_clear_log(self, data):
         name = str(data.get("name", "")).strip().lower()
-        logs = {"live": live_logs, "errors": error_logs, "downloads": download_logs, "video": video_logs, "sabr": sabr_logs}
+        logs = {"live": live_logs, "errors": error_logs, "downloads": download_logs, "video": video_logs, "sabr": sabr_logs, "h2": h2_logs}
         if name not in logs:
             self.send_json({"ok": False, "error": "invalid log name"}, 400)
             return

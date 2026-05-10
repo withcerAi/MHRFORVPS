@@ -20,7 +20,8 @@ let lastLogs = {
   errors: [],
   downloads: [],
   video: [],
-  sabr: []
+  sabr: [],
+  h2: []
 };
 
 let lastRenderedLogs = [];
@@ -580,8 +581,27 @@ function parseLogLine(line, fallbackType) {
   const low = rawLine.toLowerCase();
   let kind = "";
 
-  if (low.includes("error") || low.includes("failed") || low.includes("relay error")) kind = "error";
-  else if (low.includes("warn") || low.includes("timeout") || low.includes("limit")) kind = "warn";
+  if (
+    low.includes("error") ||
+    low.includes("failed") ||
+    low.includes("failure") ||
+    low.includes("relay error") ||
+    low.includes("relay failure") ||
+    low.includes("timeout") ||
+    low.includes("timeouterror") ||
+    low.includes("connectionerror") ||
+    low.includes("temporarily disabled") ||
+    low.includes("front-ip signal") ||
+    low.includes("hint=error") ||
+    low.includes("status=403") ||
+    low.includes("status=429") ||
+    low.includes("status=500") ||
+    low.includes("status=502") ||
+    low.includes("status=503") ||
+    low.includes("status=504")
+  ) kind = "error";
+  else if (low.includes("warn") || low.includes("limit")) kind = "warn";
+  else if (fallbackType === "h2") kind = "warn";
   else if (fallbackType === "video" || fallbackType === "sabr") kind = "video";
   else if (fallbackType === "downloads") kind = "download";
 
@@ -594,7 +614,7 @@ function filterLines(lines, q) {
 }
 
 function renderLogs() {
-  const tabs = ["live", "errors", "downloads", "video", "sabr"];
+  const tabs = ["live", "errors", "downloads", "video", "sabr", "h2"];
 
   tabs.forEach((name) => {
     $("logtab_" + name)?.classList.toggle("active", name === activeLog);
@@ -1502,7 +1522,19 @@ function render(s) {
   };
 
   const mode = s.web_mode || c.runtime_mode || "-";
-  const errRate = ((s.errors || 0) / Math.max(1, s.google_requests || 1)) * 100;
+  // Dashboard-visible errors:
+  // Prefer log-derived error count because many real runtime problems
+  // are WARNING/timeout/H2/front-IP events and may not increment stats.errors.
+  const statErrors = Number(s.errors || 0);
+  const logErrors = Number(
+    s.dashboard_log_errors ??
+    (s.dashboard_log_counts && s.dashboard_log_counts.errors) ??
+    (lastLogs.errors ? lastLogs.errors.length : 0) ??
+    0
+  );
+  const visibleErrors = Math.max(statErrors, logErrors);
+
+  const errRate = (visibleErrors / Math.max(1, s.google_requests || s.proxy_requests || 1)) * 100;
   const errRateText = errRate.toFixed(2) + "%";
   const errSt = errorState(errRate);
   const exitOnline = !!(s.exit_node_health && s.exit_node_health.ok);
@@ -1524,7 +1556,7 @@ function render(s) {
   setFeatureBadge("topVideoPrefetch", "Video Prefetch", !!c.video_prefetch_enabled);
   setFeatureBadge("topManifestPrefetch", "Manifest Prefetch", !!c.manifest_prefetch_enabled);
   setFeatureBadge("topVideoPassthrough", "Video Passthrough", !!c.video_passthrough_enabled);
-  setBadge("topErrors", "Errors: " + errRateText, errSt);
+  setBadge("topErrors", "Errors: " + visibleErrors + " · " + errRateText, errSt);
   setBadge("topSpeed", "↓ " + fmtMbps(speeds.rx) + " / ↑ " + fmtMbps(speeds.tx), "info");
 
   setText("health", exitOnline ? "ONLINE" : "OFFLINE");
@@ -1541,7 +1573,7 @@ function render(s) {
 
   setText("errorRate", errRateText);
   setClass("errorRate", "value " + (errSt === "good" ? "goodText" : errSt === "bad" ? "badText" : "warnText"));
-  setBadge("errorBadge", String(s.errors || 0) + " errors", errSt);
+  setBadge("errorBadge", String(visibleErrors) + " errors", errSt);
 
   setText("downSpeed", fmtMbps(speeds.rx));
   setText("downPeak", fmtMbps(peaks.rx));
@@ -1552,7 +1584,7 @@ function render(s) {
   setText("runtimeQuota", String(s.runtime_quota_used || 0));
   setText("uptime", fmtTime(s.uptime_seconds));
   setText("resetIn", fmtTime(s.reset_in_seconds));
-  setText("errors", s.errors || 0);
+  setText("errors", visibleErrors);
   setText("fromGoogleMini", fmtBytes(s.bytes_from_google));
   setText("toGoogleMini", fmtBytes(s.bytes_to_google));
   setText("clientTrafficMini", fmtBytes((s.bytes_to_client || 0) + (s.bytes_from_client || 0)));
@@ -1563,7 +1595,7 @@ function render(s) {
     "Google Requests": s.google_requests || 0,
     "Proxy Requests": s.proxy_requests || 0,
     "Requests / sec": speeds.req.toFixed(2),
-    "Errors": s.errors || 0,
+    "Errors": visibleErrors,
     "Reset At": s.reset_at_iran || "-"
   });
 
@@ -1818,7 +1850,7 @@ function render(s) {
   setHTML("diagnosticSignals", [
     healthBox("Exit Node", exitOnline ? "ONLINE" : "OFFLINE", ehErr, exitOnline ? "good" : "bad"),
     healthBox("H2", h2Text, "Live " + (c.h2_live_connections ?? "-") + " / " + (c.h2_connections ?? "-"), h2State),
-    healthBox("Error Rate", errRateText, (s.errors || 0) + " total errors", errSt),
+    healthBox("Error Rate", errRateText, visibleErrors + " visible errors", errSt),
     healthBox("Front Health", frontStateFromStats(c)[0], "Recent timeouts: " + (c.front_ip_recent_timeouts || 0), frontStateFromStats(c)[1]),
     healthBox("SABR", sabrOn ? "ON" : "OFF", "Success rate: " + (s.sabr_success_rate ?? "-"), sabrOn ? "good" : "bad"),
     healthBox("Runtime Baseline", fmtTime(s.runtime_baseline_age_seconds || 0), s.runtime_baseline_reason || "-", "info"),
@@ -1912,7 +1944,7 @@ async function refresh() {
     if (logsResp) {
       if (!logsResp.ok) throw new Error("logs HTTP " + logsResp.status);
       const logs = await logsResp.json();
-      lastLogs = Object.assign({ live: [], errors: [], downloads: [], video: [], sabr: [] }, logs || {});
+      lastLogs = Object.assign({ live: [], errors: [], downloads: [], video: [], sabr: [], h2: [] }, logs || {});
     }
 
     render(s);

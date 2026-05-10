@@ -90,7 +90,9 @@ class AutoTuner:
 
     def _all_log_text(self, logs):
         all_lines = []
-        for key in ("errors", "video", "sabr", "downloads", "live"):
+        # Include dedicated H2 logs too. H2 instability can be routed to
+        # its own dashboard tab and may not always appear in errors/video/sabr.
+        for key in ("errors", "h2", "video", "sabr", "downloads", "live"):
             all_lines.extend(logs.get(key, []) or [])
         return "\n".join(str(x).lower() for x in all_lines[-900:])
 
@@ -104,18 +106,35 @@ class AutoTuner:
             "timeout": count_any("timeout", "timeouterror", "timed out"),
             "relay_error": count_any("relay error", "relay failed", "outbound connect failed"),
             "h1_timeout": count_any("relay timeout via h1"),
-            "h2_timeout": count_any("relay timeout via h2", "h2 stream", "h2_fanout_stream_or_apps_script", "h2_stream_no_response"),
+            "h2_timeout": count_any(
+                "relay timeout via h2",
+                "front-ip signal: timeout via h2",
+                "timeout via h2",
+                "h2 timeout",
+                "h2 stream timeout",
+                "h2_fanout_stream_or_apps_script",
+                "h2_stream_no_response",
+            ),
             "h2_error": count_any(
                 "h2 reader error",
                 "h2 temporarily disabled",
                 "h2 disabled",
+                "h2 cooldown",
                 "h2 reader loop ended",
                 "h2 remote closed",
+                "relay failure detail path=h2",
+                "h2 fanout-fallback",
+                "fanout-fallback",
                 "connectionerror",
                 "winerror 64",
                 "network name is no longer available",
             ),
-            "h2_reconnect": count_any("h2 connected", "h2 reconnect", "re-enabled script"),
+            "h2_reconnect": count_any(
+                "h2 connected",
+                "h2 reconnect",
+                "h2 reconnected",
+                "re-enabled script",
+            ),
             "range_probe": count_any("initial range probe", "range probe"),
             "stream_fallback": count_any("streaming download fallback", "invalid first range", "file too small"),
             "quota": count_any("quota", "rate limit", "too many", " 429", "status=429"),
