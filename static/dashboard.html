@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <title>MHR Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+
+<body>
+<header class="topbar">
+  <div class="topInner">
+
+    <div class="brandRow">
+      <div class="brand">
+        <div class="logo">M</div>
+        <div class="title">
+          <h1 data-i18n="app.title">MHR Dashboard</h1>
+          <div class="liveMini" id="status">
+            <span class="dot" id="liveDot"></span>
+            <span id="liveText" data-i18n="status.connecting">Connecting...</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="statusStrip">
+        <span class="badge purple" id="topMode">Mode: -</span>
+        <span class="badge" id="topExit">Exit node: -</span>
+        <span class="badge" id="topH2">H2: -</span>
+        <span class="badge featureBadge" id="topTurbo">Turbo: -</span>
+        <span class="badge featureBadge" id="topSabr">SABR: -</span>
+        <span class="badge featureBadge" id="topVideoPrefetch">Video Prefetch: -</span>
+        <span class="badge featureBadge" id="topManifestPrefetch">Manifest Prefetch: -</span>
+        <span class="badge featureBadge" id="topVideoPassthrough">Video Passthrough: -</span>
+        <span class="badge" id="topErrors">Errors: -</span>
+        <span class="badge info" id="topSpeed">↓ - / ↑ -</span>
+      </div>
+    </div>
+
+    <div class="navRow dashboardNav">
+      <div class="navMain">
+        <div class="tabs primaryTabs">
+          <button class="tabBtn active" data-tab="overview" onclick="setTab('overview')" data-i18n="nav.overview">Overview</button>
+          <button class="tabBtn" data-tab="network" onclick="setTab('network')" data-i18n="nav.network">Network</button>
+          <button class="tabBtn" data-tab="features" onclick="setTab('features')" data-i18n="nav.features">Modes & Features</button>
+          <button class="tabBtn" data-tab="video" onclick="setTab('video')" data-i18n="nav.video">Video / YouTube</button>
+          <button class="tabBtn" data-tab="downloads" onclick="setTab('downloads')" data-i18n="nav.downloads">Downloads</button>
+          <button class="tabBtn" data-tab="scripts" onclick="setTab('scripts')" data-i18n="nav.scripts">Scripts</button>
+          <button class="tabBtn" data-tab="optimizer" onclick="setTab('optimizer')" data-i18n="nav.optimizer">Script Optimizer</button>
+          <button class="tabBtn" data-tab="diagnostics" onclick="setTab('diagnostics')" data-i18n="nav.diagnostics">Diagnostics</button>
+          <button class="tabBtn" data-tab="logs" onclick="setTab('logs')" data-i18n="nav.logs">Logs</button>
+          <button class="tabBtn" data-tab="config" onclick="setTab('config')" data-i18n="nav.config">Config</button>
+        </div>
+
+        <div class="quickBtns headerActions">
+          <button class="suggestionBtn" onclick="openSuggestions()" data-i18n="btn.suggestions">Suggestions</button>
+          <button class="fileDownloaderBtn" onclick="window.open('/downloader','_blank','noopener,noreferrer')" data-i18n="btn.fileDownloader">File Downloader</button>
+          <button class="ghost iconBtn" onclick="toggleLang()" title="Language" aria-label="Language" id="langBtn">FA</button>
+          <button class="ghost iconBtn" onclick="toggleSettings()" title="Settings" aria-label="Settings" data-i18n-title="btn.settings">⚙</button>
+        </div>
+      </div>
+
+      <div class="modeBar">
+        <div class="modeLabel">
+          <span data-i18n="mode.label">Runtime Mode</span>
+          <small data-i18n="mode.help">Choose speed / stability profile</small>
+        </div>
+
+        <div class="modeBtns segmentedModes">
+          <button id="mode_auto" onclick="openSuggestions()" title="Open suggestions before enabling Auto" data-i18n="mode.auto">Auto</button>
+          <button id="mode_basic" onclick="setMode('basic')" data-i18n="mode.basic">Basic</button>
+          <button id="mode_medium" onclick="setMode('medium')" data-i18n="mode.medium">Medium</button>
+          <button id="mode_ultra" onclick="setMode('ultra')" data-i18n="mode.ultra">Ultra</button>
+          <span class="modeDownloadWrap">
+            <button id="mode_download" onclick="setMode('download')" data-i18n="mode.download">Download Mode</button>
+            <span class="modeHelp downTip" data-tip="Download Mode is for large browser downloads.">?</span>
+          </span>
+        </div>
+
+        <span class="safeModeWrap">
+          <button class="warn safeModeCompact off" id="safeModeBtn" onclick="toggleFeature('disable_all')">Safe Mode: OFF</button>
+          <span class="safeQuestion" data-i18n-tip="safe.tip" data-tip="Safe Mode temporarily disables Turbo, H2, SABR, Video Prefetch, Manifest Prefetch, and Video Passthrough.">?</span>
+        </span>
+      </div>
+    </div>
+
+  </div>
+</header>
+
+<div class="drawer" id="settingsDrawer">
+  <div class="drawerHead">
+    <div>
+      <h2 data-i18n="settings.title">Settings</h2>
+      <div class="panelSub" data-i18n="settings.subtitle">Feature toggles and display mode</div>
+    </div>
+    <button onclick="toggleSettings()" data-i18n="btn.close">Close</button>
+  </div>
+
+  <div class="settingsTabsFinal">
+    <button id="view_simple" onclick="setViewMode('simple')" data-i18n="settings.simple">Simple</button>
+    <button id="view_advanced" onclick="setViewMode('advanced')" data-i18n="settings.advanced">Advanced</button>
+  </div>
+
+  <div class="settingsSectionFinal">
+    <div class="settingsSectionHeadFinal">
+      <div>
+        <div class="settingsSectionTitleFinal" data-i18n="settings.featureToggles">Feature Toggles</div>
+        <div class="settingsSectionSubFinal" data-i18n="settings.featureTogglesSub">Control acceleration, H2, SABR and video-related features.</div>
+      </div>
+    </div>
+
+    <div class="settingsToggleGridFinal">
+      <button id="tgBtn" onclick="toggleFeature('telegram')" data-i18n="feature.telegram">Telegram</button>
+      <button id="turboBtn" onclick="toggleFeature('turbo')" data-i18n="feature.turbo">Turbo</button>
+      <button id="h2Btn" onclick="toggleFeature('h2')" data-i18n="feature.h2">H2</button>
+      <button id="sabrBtn" onclick="toggleFeature('sabr')" data-i18n="feature.sabr">SABR</button>
+      <button id="vpBtn" onclick="toggleFeature('video_prefetch')" data-i18n="feature.videoPrefetch">Video Prefetch</button>
+      <button id="mpBtn" onclick="toggleFeature('manifest_prefetch')" data-i18n="feature.manifestPrefetch">Manifest Prefetch</button>
+      <button id="vpassBtn" onclick="toggleFeature('video_passthrough')" data-i18n="feature.videoPassthrough">Video Passthrough</button>
+    </div>
+
+    <div class="safeCardFinal">
+      <div class="safeCardTopFinal">
+        <div class="safeCardTitleFinal">
+          <span data-i18n="safe.title">Safe Mode</span>
+          <span class="helpQuestionFinal" data-i18n-tip="safe.tip" data-tip="Safe Mode temporarily disables Turbo, H2, SABR, Video Prefetch, Manifest Prefetch and Video Passthrough.">?</span>
+        </div>
+        <button id="settingsSafeModeBtn" class="safeToggleBtn off" onclick="toggleFeature('disable_all')">Safe Mode: OFF</button>
+      </div>
+      <div class="safeCardDescFinal">
+        <b data-i18n="settings.safeRecommended">Recommended when:</b>
+        <span data-i18n="settings.safeDesc">errors increase, H2/SABR becomes unstable, video prefetch causes issues, or you want a temporary low-risk profile.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<main>
+
+  <section class="tabPage active" id="tab_overview">
+    <div class="grid overviewGrid">
+
+      <div class="panel c12 actionCard" id="actionCenterPanel">
+        <div class="head">
+          <div>
+            <div class="label" data-i18n="overview.actionCenter">Action Center</div>
+            <div class="actionTitle" id="actionTitle" data-i18n="overview.analyzing">Analyzing...</div>
+            <div class="actionHint" id="actionHint" data-i18n="overview.waiting">Waiting for runtime stats.</div>
+          </div>
+          <span class="badge info" id="advisorBadge">Advisor: -</span>
+        </div>
+        <div class="actionBtns">
+          <button onclick="openSuggestions()" data-i18n="overview.openSuggestions">Open Suggestions</button>
+          <button id="actionSafeModeBtn" class="warn safeModeCompact off" onclick="toggleFeature('disable_all')">Safe Mode: OFF</button>
+          <button onclick="setTab('diagnostics')" data-i18n="nav.diagnostics">Diagnostics</button>
+          <button onclick="setTab('logs')" data-i18n="nav.logs">Logs</button>
+        </div>
+      </div>
+
+      <div class="card c3" id="systemHealthCard">
+        <div class="head">
+          <div class="label" data-i18n="card.systemHealth">System Health</div>
+          <span class="badge" id="healthBadge">-</span>
+        </div>
+        <div class="value" id="health">-</div>
+        <div class="meta" id="healthMeta">Exit node and runtime status</div>
+      </div>
+
+      <div class="card c3" id="modeOverviewCard">
+        <div class="head">
+          <div class="label" data-i18n="card.mode">Mode</div>
+          <span class="badge purple" id="modeMiniBadge">-</span>
+        </div>
+        <div class="value infoText" id="mode">-</div>
+        <div class="meta" id="modeMeta">Current runtime profile</div>
+      </div>
+
+      <div class="card c3" id="downloadOverviewCard">
+        <div class="head">
+          <div class="label" data-i18n="card.download">Download</div>
+          <span class="badge info">RX</span>
+        </div>
+        <div class="value infoText" id="downSpeed">-</div>
+        <div class="meta">Peak: <b id="downPeak">-</b> · From Google: <b id="fromGoogleMini">-</b></div>
+      </div>
+
+      <div class="card c3" id="uploadOverviewCard">
+        <div class="head">
+          <div class="label" data-i18n="card.upload">Upload</div>
+          <span class="badge warn">TX</span>
+        </div>
+        <div class="value warnText" id="upSpeed">-</div>
+        <div class="meta">Peak: <b id="upPeak">-</b> · To Google: <b id="toGoogleMini">-</b></div>
+      </div>
+
+      <div class="card c3" id="h2OverviewCard">
+        <div class="head">
+          <div class="label" data-i18n="card.h2Pool">H2 Pool</div>
+          <span class="badge" id="h2MiniBadge">-</span>
+        </div>
+        <div class="value" id="h2Status">-</div>
+        <div class="meta" id="h2Meta">Live backend H2 pool status</div>
+      </div>
+
+      <div class="card c3" id="errorOverviewCard">
+        <div class="head">
+          <div class="label" data-i18n="card.errorRate">Error Rate</div>
+          <span class="badge" id="errorBadge">-</span>
+        </div>
+        <div class="value" id="errorRate">-</div>
+        <div class="meta">Errors: <b id="errors">-</b></div>
+      </div>
+
+      
+      <div class="card c3" id="runtimeQuotaCard">
+        <div class="head">
+          <div class="label" data-i18n="card.runtimeQuota">Runtime Quota</div>
+          <span class="badge purple">Session</span>
+        </div>
+        <div class="value purpleText" id="runtimeQuota">-</div>
+        <div class="meta">Uptime: <b id="uptime">-</b> · Reset: <b id="resetIn">-</b></div>
+      </div>
+
+      <div class="card c3" id="optimizerOverviewCard">
+        <div class="head">
+          <div class="label" data-i18n="optimizer.cardTitle">Script Optimizer</div>
+          <span class="badge" id="optimizerMiniBadge">-</span>
+        </div>
+        <div class="value purpleText" id="optimizerTier">-</div>
+        <div class="meta" id="optimizerMeta">Optimized config tier</div>
+      </div>
+
+      <div class="card c3" id="clientOverviewCard">
+        <div class="head">
+          <div class="label" data-i18n="card.client">Client</div>
+          <span class="badge good">LAN</span>
+        </div>
+        <div class="value goodText" id="clientSpeed">-</div>
+        <div class="meta">Req/sec: <b id="reqSpeed">-</b> · Traffic: <b id="clientTrafficMini">-</b></div>
+      </div>
+      <div class="panel c4" id="coreStatsPanel">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.coreStats">Core Stats</h2>
+            <div class="panelSub" data-i18n="section.coreStatsSub">Proxy, requests and reset window</div>
+          </div>
+        </div>
+        <div class="kv" id="coreStats"></div>
+      </div>
+
+      <div class="panel c4" id="trafficQuotaPanel">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.trafficQuota">Traffic & Quota</h2>
+            <div class="panelSub" data-i18n="section.trafficQuotaSub">Google, client and runtime usage</div>
+          </div>
+        </div>
+        <div class="kv" id="trafficStats"></div>
+      </div>
+
+      <div class="panel c4" id="relaySummaryPanel">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.relaySummary">Relay Summary</h2>
+            <div class="panelSub" data-i18n="section.relaySummarySub">Parallel relay, chunks, H2 and batch</div>
+          </div>
+        </div>
+        <div class="kv" id="relayStats"></div>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_network">
+    <div class="grid">
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.proxyAccess">Proxy & Access</h2>
+            <div class="panelSub" data-i18n="section.proxyAccessSub">HTTP proxy, SOCKS5 and LAN sharing</div>
+          </div>
+        </div>
+        <div class="kv left" id="networkProxyStats"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.routing">Routing</h2>
+            <div class="panelSub" data-i18n="section.routingSub">Google routing, bypass, block and host overrides</div>
+          </div>
+        </div>
+        <div class="kv left" id="routingStats"></div>
+      </div>
+
+      <div class="panel c12">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.frontHealth">Front IP / SNI Health</h2>
+            <div class="panelSub" data-i18n="section.frontHealthSub">Fronting path, SNI rotation, H2 health and timeout diagnostics</div>
+          </div>
+          <span class="badge" id="frontHealthBadge">-</span>
+        </div>
+        <div class="healthGrid" id="frontHealthGrid"></div>
+        <div class="note" id="sniRotationList">SNI pool: -</div>
+        <div class="kv left" id="frontHealthStats" style="margin-top:12px"></div>
+      </div>
+
+      <div class="panel c12 optionalAdvanced">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.timeouts">Timeouts</h2>
+            <div class="panelSub" data-i18n="section.timeoutsSub">Network and relay timeout values</div>
+          </div>
+        </div>
+        <div class="configGrid" id="timeoutGrid"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_features">
+    <div class="grid">
+      <div class="panel c12">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.featureToggles">Feature Toggles</h2>
+            <div class="panelSub" data-i18n="section.featureTogglesSub">Status, effective state and reason</div>
+          </div>
+          <span class="safeModeWrap">
+            <button id="featuresSafeModeBtn" class="warn safeModeCompact off" onclick="toggleFeature('disable_all')">Safe Mode: OFF</button>
+            <span class="safeQuestion" data-i18n-tip="safe.tip" data-tip="Safe Mode temporarily disables Turbo, H2, SABR, Video Prefetch, Manifest Prefetch, and Video Passthrough.">?</span>
+          </span>
+        </div>
+        <div class="featureGrid" id="featureTiles"></div>
+        <div class="pills" id="features" style="margin-top:12px"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.modeDetails">Mode Details</h2>
+            <div class="panelSub" data-i18n="section.modeDetailsSub">Current runtime profile and auto tune</div>
+          </div>
+        </div>
+        <div class="kv left" id="featureStats"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.turboStatus">Turbo Status</h2>
+            <div class="panelSub" data-i18n="section.turboStatusSub">Boost state and effective relay profile</div>
+          </div>
+        </div>
+        <div id="turboStatus" class="pills"></div>
+        <div class="kv left" id="turboStats" style="margin-top:12px"></div>
+      </div>
+
+      <div class="panel c12 optionalAdvanced">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.featureRawConfig">Feature Raw Config</h2>
+            <div class="panelSub" data-i18n="section.featureRawConfigSub">All related feature fields from /stats config</div>
+          </div>
+        </div>
+        <div class="rawBox" id="featureRaw"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_video">
+    <div class="grid">
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.videoPrefetch">Video / Manifest Prefetch</h2>
+            <div class="panelSub" data-i18n="section.videoPrefetchSub">Range cache and manifest lookahead</div>
+          </div>
+        </div>
+        <div class="kv" id="videoStats"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.sabrBooster">YouTube SABR Booster</h2>
+            <div class="panelSub" data-i18n="section.sabrBoosterSub">POST googlevideo / sabr=1 only</div>
+          </div>
+        </div>
+        <div id="sabrStatus" class="pills"></div>
+        <div class="kv" id="sabrStats" style="margin-top:12px"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.videoConfig">Video Config</h2>
+            <div class="panelSub" data-i18n="section.videoConfigSub">Cache, retries, passthrough and priority relay</div>
+          </div>
+        </div>
+        <div class="configGrid" id="videoConfigGrid"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.recentVideoLogs">Recent Video Logs</h2>
+            <div class="panelSub" data-i18n="section.recentVideoLogsSub">Latest video and SABR events</div>
+          </div>
+        </div>
+        <div class="rawBox" id="videoRecentLogs"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_downloads">
+    <div class="grid">
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.pythonDownloader">Python Downloader</h2>
+            <div class="panelSub" data-i18n="section.pythonDownloaderSub">Direct downloader settings</div>
+          </div>
+          <button onclick="window.open('/downloader','_blank','noopener,noreferrer')" data-i18n="btn.openDownloader">Open Downloader</button>
+        </div>
+        <div class="kv left" id="downloaderStats"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.chunkedDownload">Chunked Download</h2>
+            <div class="panelSub" data-i18n="section.chunkedDownloadSub">Browser download relay settings</div>
+          </div>
+        </div>
+        <div class="kv left" id="chunkedDownloadStats"></div>
+      </div>
+
+      <div class="panel c12">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.downloadLogs">Download Logs</h2>
+            <div class="panelSub" data-i18n="section.downloadLogsSub">Recent download activity</div>
+          </div>
+        </div>
+        <div class="rawBox" id="downloadRecentLogs"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_scripts">
+    <div class="grid">
+      <div class="panel c12">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.scriptUsage">Google Apps Script Usage</h2>
+            <div class="panelSub" data-i18n="section.scriptUsageSub">Quota, runtime errors, total errors and status</div>
+          </div>
+        </div>
+        <div id="scripts"></div>
+      </div>
+
+      <div class="panel c12">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.topHosts">Top Hosts</h2>
+            <div class="panelSub" data-i18n="section.topHostsSub">Traffic and errors by host</div>
+          </div>
+        </div>
+        <div id="hosts"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_optimizer">
+    <div class="grid">
+
+      <div class="panel c12 actionCard">
+        <div class="head">
+          <div>
+            <div class="label" data-i18n="optimizer.title">Script Count Optimizer</div>
+            <div class="actionTitle" id="optimizerTitle" data-i18n="optimizer.loading">Loading optimizer...</div>
+            <div class="actionHint" id="optimizerHint" data-i18n="optimizer.hint">Choose the profile tier based on the number of Apps Script deployment IDs you have.</div>
+          </div>
+          <span class="badge purple" id="optimizerStatusBadge">Optimizer: -</span>
+        </div>
+        <div class="note info" id="optimizerSoftWarning" style="display:none"></div>
+      </div>
+
+      <div class="panel c5">
+        <div class="head">
+          <div>
+            <h2 data-i18n="optimizer.idsTitle">Script IDs</h2>
+            <div class="panelSub" data-i18n="optimizer.idsSub">Add or remove Apps Script Deployment IDs.</div>
+          </div>
+          <span class="badge info" id="optimizerCountBadge">0 IDs</span>
+        </div>
+
+        <div class="optimizerIdTools">
+          <input id="optimizerNewId" class="optimizerIdInput" placeholder="AKfycb..." spellcheck="false" autocomplete="off">
+          <button class="good" onclick="optimizerAddId()" data-i18n="optimizer.addId">Add ID</button>
+        </div>
+
+        <div class="optimizerPasteBox">
+          <button class="ghost" onclick="optimizerTogglePaste()" data-i18n="optimizer.pasteBulk">Bulk editor</button>
+          <textarea id="optimizerBulkPaste" class="optimizerTextarea optimizerBulkTextarea" spellcheck="false" placeholder="AKfycb..." style="display:none"></textarea>
+          <div class="actionBtns" id="optimizerBulkActions" style="display:none">
+            <button onclick="optimizerImportBulk()" data-i18n="optimizer.importBulk">Import IDs</button>
+            <button class="ghost" onclick="optimizerTogglePaste(false)" data-i18n="btn.close">Close</button>
+          </div>
+        </div>
+
+        <div class="optimizerIdList" id="optimizerIdList"></div>
+
+        <div class="actionBtns">
+          <button class="warn" onclick="optimizerCleanIds()" data-i18n="optimizer.cleanIds">Clean Duplicates</button>
+          <button onclick="saveScriptOptimizer(false)" data-i18n="optimizer.saveOnly">Save IDs Only</button>
+        </div>
+
+        <div class="note info" id="optimizerIdCountNote">-</div>
+        <div class="note warn" data-i18n="optimizer.quotaNote">When IDs are changed or optimization is applied, quota_state.json will be reset so script usage starts cleanly.</div>
+      </div>
+
+      <div class="panel c7">
+        <div class="head">
+          <div>
+            <h2 data-i18n="optimizer.profileTitle">Optimization Tier</h2>
+            <div class="panelSub" data-i18n="optimizer.profileSub">Tiers above your current Script ID count are locked.</div>
+          </div>
+          <span class="badge" id="optimizerActiveBadge">Active: -</span>
+        </div>
+
+        <div class="optimizerTierGrid" id="optimizerTierGrid"></div>
+
+        <div class="optimizerApplyBox">
+          <div class="kv left" id="optimizerKv"></div>
+          <div class="actionBtns">
+            <button class="good" onclick="saveScriptOptimizer(true)" data-i18n="optimizer.applyRestart">Apply Optimization & Restart</button>
+            <button onclick="loadScriptOptimizer()" data-i18n="btn.refresh">Refresh</button>
+          </div>
+          <div class="note info" data-i18n="optimizer.oneTimeNote">Optimization is applied only when you click Apply. On future app starts, MHR will keep the saved config and will not re-optimize automatically.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_diagnostics">
+    <div class="grid">
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.exitNode">Exit Node</h2>
+            <div class="panelSub" data-i18n="section.exitNodeSub">Health returned through relay path</div>
+          </div>
+        </div>
+        <div id="exitNodeStatus" class="pills"></div>
+        <div class="kv left" id="exitNodeStats" style="margin-top:12px"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.healthSignals">Health Signals</h2>
+            <div class="panelSub" data-i18n="section.healthSignalsSub">Current warning and critical signals</div>
+          </div>
+        </div>
+        <div class="healthGrid" id="diagnosticSignals"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.system">System</h2>
+            <div class="panelSub" data-i18n="section.systemSub">Local process resource usage</div>
+          </div>
+        </div>
+        <div class="kv" id="systemStats"></div>
+      </div>
+
+      <div class="panel c6">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.recentErrors">Recent Errors</h2>
+            <div class="panelSub" data-i18n="section.recentErrorsSub">Latest error log lines</div>
+          </div>
+        </div>
+        <div class="rawBox" id="recentErrors"></div>
+      </div>
+
+      <div class="panel c12 optionalAdvanced">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.rawStats">Raw Stats Snapshot</h2>
+            <div class="panelSub" data-i18n="section.rawStatsSub">Full /stats payload, secrets already redacted by backend</div>
+          </div>
+        </div>
+        <div class="rawBox" id="rawStats"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_logs">
+    <div class="grid">
+      <div class="panel c12">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.logsConsole">Logs Console</h2>
+            <div class="panelSub" data-i18n="section.logsConsoleSub">Live, errors, downloads, video and SABR logs</div>
+          </div>
+          <div class="pills">
+            <span class="pill info"><span data-i18n="log.tab">Tab</span>: <b id="activeLogLabel">live</b></span>
+            <span class="pill" id="logCountPill">0 lines</span>
+          </div>
+        </div>
+
+        <div class="subTabs">
+          <button id="logtab_live" onclick="setLogTab('live')">All / Live <span id="count_live"></span></button>
+          <button id="logtab_errors" onclick="setLogTab('errors')">Errors <span id="count_errors"></span></button>
+          <button id="logtab_downloads" onclick="setLogTab('downloads')">Downloads <span id="count_downloads"></span></button>
+          <button id="logtab_video" onclick="setLogTab('video')">Video <span id="count_video"></span></button>
+          <button id="logtab_sabr" onclick="setLogTab('sabr')">SABR <span id="count_sabr"></span></button>
+        </div>
+
+        <div class="logToolbar">
+          <input id="logSearch" placeholder="Search active log..." data-i18n-placeholder="log.searchPlaceholder" oninput="renderLogs()">
+          <div class="logActions">
+            <button onclick="togglePauseLogs()" id="pauseLogsBtn">Pause Live</button>
+            <button onclick="copyActiveLog()">Copy Visible</button>
+            <button class="bad" onclick="clearActiveLog()">Clear Tab</button>
+          </div>
+        </div>
+
+        <div class="logbox" id="logOutput"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tabPage" id="tab_config">
+    <div class="grid">
+      <div class="panel c12">
+        <div class="head">
+          <div>
+            <h2 data-i18n="section.advancedConfig">Advanced Runtime Config</h2>
+            <div class="panelSub" data-i18n="section.advancedConfigSub">Grouped config keys. Secrets stay redacted.</div>
+          </div>
+        </div>
+
+        <div class="subTabs" id="configTabs">
+          <button id="cfgtab_network" onclick="setCfgTab('network')" data-i18n="nav.network">Network</button>
+          <button id="cfgtab_routing" onclick="setCfgTab('routing')" data-i18n="config.routing">Routing</button>
+          <button id="cfgtab_timeouts" onclick="setCfgTab('timeouts')" data-i18n="config.timeouts">Timeouts</button>
+          <button id="cfgtab_downloads" onclick="setCfgTab('downloads')" data-i18n="nav.downloads">Downloads</button>
+          <button id="cfgtab_video" onclick="setCfgTab('video')" data-i18n="config.video">Video</button>
+          <button id="cfgtab_turbo" onclick="setCfgTab('turbo')" data-i18n="config.turbo">Turbo</button>
+          <button id="cfgtab_telegram" onclick="setCfgTab('telegram')" data-i18n="config.telegram">Telegram</button>
+          <button id="cfgtab_downloader" onclick="setCfgTab('downloader')" data-i18n="config.downloader">Downloader</button>
+          <button id="cfgtab_security" onclick="setCfgTab('security')" data-i18n="config.security">Security</button>
+          <button id="cfgtab_all" onclick="setCfgTab('all')" data-i18n="config.all">All</button>
+        </div>
+
+        <div id="advancedCfgBody"></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/dashboard.i18n.js"></script>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# Core
+# Python 3.10+ required
+
+# MITM interception / certificate generation
+cryptography>=41.0.0
+
+# HTTP/2 multiplexing for Apps Script relay
+h2>=4.1.0
+
+# TLS CA bundle
+certifi>=2024.1.0; sys_platform != "win32"
+
+# Compression support
+brotli>=1.1.0
+zstandard>=0.22.0
+
+# System stats for dashboard
+psutil>=5.9.8
+
+# Optional terminal UI / compatibility
+rich>=13.7.0
