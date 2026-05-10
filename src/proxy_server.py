@@ -3116,7 +3116,10 @@ class ProxyServer:
                 1 for h in (getattr(self.fronter, "_h2_pool", []) or [])
                 if getattr(h, "_connected", False)
             ),
-            "h2_available": bool(getattr(self.fronter, "_h2_pool", []) or []),
+            "h2_available": any(
+                getattr(h, "_connected", False)
+                for h in (getattr(self.fronter, "_h2_pool", []) or [])
+            ),
             "h2_disabled_until": getattr(self.fronter, "_h2_disabled_until", 0),
 
             "chunked_download_min_size": getattr(self, "_download_min_size", 0),

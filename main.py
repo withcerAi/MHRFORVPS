@@ -100,7 +100,9 @@ OPTIMIZER_MANAGED_KEYS = (
     "runtime_mode", "label",
     "relay_timeout", "range_probe_timeout", "h2_stream_timeout", "h2_connect_timeout",
     "tls_connect_timeout", "tcp_connect_timeout",
-    "parallel_relay", "h2_connections", "enable_batch", "enable_sub_batch",
+    "parallel_relay", "h2_connections",
+    "h2_healer_enabled", "h2_healer_delay_seconds", "h2_healer_cooldown_seconds", "h2_healer_check_interval",
+    "enable_batch", "enable_sub_batch",
     "batch_window_micro", "batch_window_macro", "batch_max",
     "chunked_download_min_size", "chunked_download_chunk_size", "chunked_download_max_parallel",
     "chunked_download_max_chunks", "max_response_body_bytes",
@@ -118,6 +120,8 @@ OPTIMIZER_MANAGED_KEYS = (
 
 live_logs = deque(maxlen=300)
 error_logs = deque(maxlen=140)
+script_error_logs = deque(maxlen=180)
+full_error_logs = deque(maxlen=320)
 download_logs = deque(maxlen=200)
 video_logs = deque(maxlen=200)
 sabr_logs = deque(maxlen=200)
@@ -156,6 +160,105 @@ try:
     PROCESS.cpu_percent(interval=None)
 except Exception:
     pass
+
+# PATCH_ERROR_TABS_HELPERS_START
+def is_script_error_log_line(text):
+    """Return True when a formatted dashboard log line belongs to Apps Script / script-id health."""
+    low = str(text or "").lower()
+
+    script_hint = any(x in low for x in (
+        "script warning",
+        "disabled script",
+        "re-enabled script",
+        "script_blacklist_warning",
+        "script_blacklisted",
+        "blacklisted script",
+        "all apps script deployments",
+        "apps script",
+        "appsscript",
+        "bad_status_",
+        "relay failure detail path=h2 fanout sid=",
+        "h2 fanout sid=",
+        "akfycb",
+    ))
+
+    failure_hint = any(x in low for x in (
+        "warning",
+        "error",
+        "failed",
+        "failure",
+        "disabled",
+        "blacklist",
+        "bad_status",
+        "timeout",
+        "503",
+        "502",
+        "504",
+        "500",
+        "429",
+        "quota",
+        "limit",
+    ))
+
+    return bool(script_hint and failure_hint)
+
+
+def is_full_error_log_line(text, levelno=0):
+    """A broad error stream for the Full Errors tab."""
+    low = str(text or "").lower()
+
+    # These are normal INFO/runtime state lines, not errors.
+    if any(x in low for x in (
+        "runtime config applied:",
+        "fronter runtime applied:",
+        "web mode switch ->",
+        "cleared ",
+        "dashboard:",
+        "web dashboard:",
+        "exit node health ok",
+        "pre-warmed ",
+        "h2 multiplexing active",
+        "http/2 multiplexing available",
+        "response codecs:",
+    )):
+        return False
+
+    is_http_error = any(x in low for x in (
+        "status=400", "status=401", "status=403", "status=404", "status=408",
+        "status=409", "status=418", "status=425", "status=429",
+        "status=500", "status=501", "status=502", "status=503", "status=504",
+        "status=505", "status=507", "status=508", "status=520", "status=521",
+        "status=522", "status=523", "status=524",
+    ))
+
+    return bool(
+        levelno >= logging.WARNING
+        or "[warning]" in low
+        or "[error]" in low
+        or " error " in low
+        or "error:" in low
+        or "hint=error" in low
+        or "failed" in low
+        or "failure" in low
+        or "relay failure" in low
+        or "relay error" in low
+        or "failure detail" in low
+        or "timeout" in low
+        or "timed out" in low
+        or "timeouterror" in low
+        or "connectionerror" in low
+        or "connection reset" in low
+        or "connection refused" in low
+        or "temporarily disabled" in low
+        or "front-ip signal" in low
+        or "front-ip unhealthy" in low
+        or "offline_or_locked" in low
+        or "bad_status_" in low
+        or "quota" in low
+        or "blacklist" in low
+        or is_http_error
+    )
+# PATCH_ERROR_TABS_HELPERS_END
 
 
 class DashboardLogHandler(logging.Handler):
@@ -249,7 +352,16 @@ class DashboardLogHandler(logging.Handler):
 
             # Error tab should show real runtime/network failures.
             # Do not treat every WARNING as an error, because some warnings are informational.
-            is_error = (
+            is_noise_error_line = any(x in low for x in (
+                "runtime config applied:",
+                "fronter runtime applied:",
+                "web mode switch ->",
+                "exit node health ok",
+                "h2 multiplexing active",
+                "http/2 multiplexing available",
+            ))
+
+            is_error = (not is_noise_error_line) and (
                 record.levelno >= logging.ERROR
                 or "[error]" in low
                 or " error " in low
@@ -275,15 +387,29 @@ class DashboardLogHandler(logging.Handler):
                 or is_http_error
             )
 
+            is_script_error = is_script_error_log_line(msg)
+            is_full_error = is_full_error_log_line(msg, record.levelno) or is_error
+
             # All / Live is a complete live stream.
             live_logs.append(msg)
 
-            # Errors is a complete error-focused stream.
+            # Legacy Errors remains compact, but Full Errors is the main complete error tab.
             if is_error:
                 error_logs.append(msg)
 
+            is_script_error = is_script_error_log_line(msg)
+            is_full_error = is_full_error_log_line(msg, record.levelno) or is_error
+
+            # Script Errors: only Apps Script / Script ID health problems.
+            if is_script_error:
+                script_error_logs.append(msg)
+
+            # Full Errors: all warnings, HTTP errors, relay failures and runtime errors.
+            if is_full_error:
+                full_error_logs.append(msg)
+
             # Traffic-specific tabs are independent.
-            # A line can appear in Live + Errors + Video/SABR when useful.
+            # A line can appear in Live + Full Errors + Script Errors + Video/SABR/H2 when useful.
             if is_download:
                 download_logs.append(msg)
 
@@ -936,7 +1062,9 @@ def get_suggestion_payload():
     snap["config"] = dict(config)
     logs = {
         "live": list(live_logs)[-100:],
-        "errors": list(error_logs)[-100:],
+        "errors": list(full_error_logs)[-100:],
+        "full_errors": list(full_error_logs)[-100:],
+        "script_errors": list(script_error_logs)[-100:],
         "downloads": list(download_logs)[-100:],
         "video": list(video_logs)[-100:],
         "sabr": list(sabr_logs)[-100:],
@@ -1086,6 +1214,10 @@ def build_dashboard_config(config, effective):
         "auto_tune_enabled": bool(config.get("auto_tune_enabled", False)),
         "auto_mode_ready": bool(config.get("auto_mode_ready", False)),
         "auto_tune_h2": bool(config.get("auto_tune_h2", True)),
+        "h2_healer_enabled": bool(config.get("h2_healer_enabled", True)),
+        "h2_healer_delay_seconds": config.get("h2_healer_delay_seconds", 20),
+        "h2_healer_cooldown_seconds": config.get("h2_healer_cooldown_seconds", 90),
+        "h2_healer_check_interval": config.get("h2_healer_check_interval", 5),
         "auto_tune_last_reason": config.get("auto_tune_last_reason", "-"),
         "auto_tune_last_change_at": config.get("auto_tune_last_change_at", 0),
         "safe_mode_active": bool(config.get("_safe_mode_active", False)),
@@ -1110,6 +1242,7 @@ def build_dashboard_config(config, effective):
         "exit_node_health_url", "exit_node_health_timeout", "exit_node_health_interval",
         "front_ip_diagnostic_window_seconds", "front_ip_diagnostic_timeout_threshold", "front_ip_diagnostic_warning_cooldown",
         "script_count", "script_tier", "optimized_for_script_count", "optimized_at", "optimizer_version",
+        "h2_healer_enabled", "h2_healer_delay_seconds", "h2_healer_cooldown_seconds", "h2_healer_check_interval",
     )
     for key in extra_keys:
         if key in config and key not in out:
@@ -1170,13 +1303,17 @@ def build_stats_payload():
     # These are rolling counters based on the in-memory dashboard log buffers.
     snap["dashboard_log_counts"] = {
         "live": len(live_logs),
-        "errors": len(error_logs),
+        "errors": len(full_error_logs),
+        "full_errors": len(full_error_logs),
+        "script_errors": len(script_error_logs),
         "downloads": len(download_logs),
         "video": len(video_logs),
         "sabr": len(sabr_logs),
         "h2": len(h2_logs),
     }
-    snap["dashboard_log_errors"] = len(error_logs)
+    snap["dashboard_log_errors"] = len(full_error_logs)
+    snap["dashboard_log_script_errors"] = len(script_error_logs)
+    snap["dashboard_log_full_errors"] = len(full_error_logs)
 
     if WEB_RUNTIME.get("quota_start") is None:
         WEB_RUNTIME["quota_start"] = safe_int(snap.get("quota_used"), 0)
@@ -1323,7 +1460,9 @@ class StatsHandler(BaseHTTPRequestHandler):
         if path in ("/logs", "/api/logs"):
             self.send_json({
                 "live": list(live_logs)[-100:],
-                "errors": list(error_logs)[-100:],
+                "errors": list(full_error_logs)[-100:],
+                "full_errors": list(full_error_logs)[-100:],
+                "script_errors": list(script_error_logs)[-100:],
                 "downloads": list(download_logs)[-100:],
                 "video": list(video_logs)[-100:],
                 "sabr": list(sabr_logs)[-100:],
@@ -1407,7 +1546,16 @@ class StatsHandler(BaseHTTPRequestHandler):
 
     def handle_clear_log(self, data):
         name = str(data.get("name", "")).strip().lower()
-        logs = {"live": live_logs, "errors": error_logs, "downloads": download_logs, "video": video_logs, "sabr": sabr_logs, "h2": h2_logs}
+        logs = {
+            "live": live_logs,
+            "errors": full_error_logs,
+            "full_errors": full_error_logs,
+            "script_errors": script_error_logs,
+            "downloads": download_logs,
+            "video": video_logs,
+            "sabr": sabr_logs,
+            "h2": h2_logs,
+        }
         if name not in logs:
             self.send_json({"ok": False, "error": "invalid log name"}, 400)
             return
@@ -1510,6 +1658,7 @@ def apply_toggle(config, name):
             and config.get("manifest_prefetch_disabled_by_dashboard", False)
             and config.get("video_passthrough_disabled_by_dashboard", False)
             and config.get("h2_disabled_by_dashboard", False)
+            and config.get("h2_healer_disabled_by_dashboard", False)
         )
         if safe_on:
             prev = config.get("_safe_mode_previous_state") or {}
@@ -1522,6 +1671,8 @@ def apply_toggle(config, name):
             restore_h2 = safe_int(prev.get("h2_connections", config.get("_h2_connections_before_dashboard_off", 1)), 1)
             config["h2_connections"] = max(1, restore_h2)
             config["h2_disabled_by_dashboard"] = False
+            config["h2_healer_enabled"] = bool(prev.get("h2_healer_enabled", True))
+            config["h2_healer_disabled_by_dashboard"] = not bool(config.get("h2_healer_enabled", True))
             config["_h2_connections_before_dashboard_off"] = config["h2_connections"]
             config["_safe_mode_active"] = False
         else:
@@ -1542,6 +1693,7 @@ def apply_toggle(config, name):
             config["manifest_prefetch_enabled"] = False
             config["video_passthrough_enabled"] = False
             config["h2_connections"] = 0
+            config["h2_healer_enabled"] = False
             config["_h2_connections_before_dashboard_off"] = current_h2
             config["_safe_mode_active"] = True
 
@@ -1551,6 +1703,7 @@ def apply_toggle(config, name):
         config["manifest_prefetch_disabled_by_dashboard"] = not bool(config.get("manifest_prefetch_enabled", False))
         config["video_passthrough_disabled_by_dashboard"] = not bool(config.get("video_passthrough_enabled", False))
         config["h2_disabled_by_dashboard"] = safe_on is False
+        config["h2_healer_disabled_by_dashboard"] = not bool(config.get("h2_healer_enabled", True))
         return True, ""
 
     if name == "telegram":
@@ -1587,6 +1740,10 @@ def apply_toggle(config, name):
             config["_h2_connections_before_dashboard_off"] = current
             config["h2_disabled_by_dashboard"] = True
             config["h2_connections"] = 0
+    elif name in ("h2_healer", "healer"):
+        on = not bool(config.get("h2_healer_enabled", True))
+        config["h2_healer_enabled"] = on
+        config["h2_healer_disabled_by_dashboard"] = not on
     else:
         return False, "invalid toggle"
 
@@ -1744,6 +1901,10 @@ def set_config_defaults(config):
     config.setdefault("auto_tune_enabled", False)
     config.setdefault("auto_mode_ready", False)
     config.setdefault("auto_tune_h2", True)
+    config.setdefault("h2_healer_enabled", True)
+    config.setdefault("h2_healer_delay_seconds", 20)
+    config.setdefault("h2_healer_cooldown_seconds", 90)
+    config.setdefault("h2_healer_check_interval", 5)
     config.setdefault("auto_tune_interval", 30)
     config.setdefault("auto_tune_suggestion_interval_seconds", 60)
     config.setdefault("video_prefetch_disabled_by_dashboard", False)
@@ -1906,7 +2067,9 @@ async def auto_tuner_loop(config, server):
             snap["exit_node_health_error"] = WEB_RUNTIME.get("server_health_error", "-")
             logs = {
                 "live": list(live_logs)[-120:],
-                "errors": list(error_logs)[-120:],
+                "errors": list(full_error_logs)[-120:],
+                "full_errors": list(full_error_logs)[-120:],
+                "script_errors": list(script_error_logs)[-120:],
                 "downloads": list(download_logs)[-120:],
                 "video": list(video_logs)[-120:],
                 "sabr": list(sabr_logs)[-120:],

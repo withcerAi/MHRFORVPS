@@ -500,13 +500,19 @@ class AutoTuner:
         overall_penalty = max(relay_penalty, video_penalty * 0.75, browsing_penalty * 0.65, script_penalty * 0.8, h2_penalty * 0.75)
         overall = round(max(0, min(100, 100 - overall_penalty + usable_traffic_bonus)), 1)
 
+        def clamp_score(value):
+            try:
+                return round(max(0, min(100, float(value))), 1)
+            except Exception:
+                return 0.0
+
         return {
-            "overall": overall,
-            "relay": round(max(0, 100 - relay_penalty + usable_traffic_bonus), 1),
-            "h2": round(max(0, 100 - h2_penalty + usable_traffic_bonus), 1),
-            "video": round(max(0, 100 - video_penalty + usable_traffic_bonus), 1),
-            "browsing": round(max(0, 100 - browsing_penalty + usable_traffic_bonus), 1),
-            "scripts": round(max(0, 100 - script_penalty), 1),
+            "overall": clamp_score(overall),
+            "relay": clamp_score(100 - relay_penalty + usable_traffic_bonus),
+            "h2": clamp_score(100 - h2_penalty + usable_traffic_bonus),
+            "video": clamp_score(100 - video_penalty + usable_traffic_bonus),
+            "browsing": clamp_score(100 - browsing_penalty + usable_traffic_bonus),
+            "scripts": clamp_score(100 - script_penalty),
         }
 
     def _add_change(self, changes, reasons, c, key, value, why, area="General", impact="Stability"):

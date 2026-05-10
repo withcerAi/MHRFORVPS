@@ -96,6 +96,12 @@ class H2Transport:
         # Per-stream tracking
         self._streams: dict[int, _StreamState] = {}
 
+        # Limit concurrent outbound H2 streams.
+        # Keep below common 30-stream limits to avoid TooManyStreamsError
+        # when video/download/fanout creates many simultaneous requests.
+        self._max_concurrent_streams = 24
+        self._stream_sem = asyncio.Semaphore(self._max_concurrent_streams)
+
         # Stats
         self.total_requests = 0
         self.total_streams = 0
@@ -280,64 +286,91 @@ class H2Transport:
     async def _single_request(self, method, path, host, headers, body,
                               timeout) -> tuple[int, dict, bytes]:
         """Send one HTTP/2 request on a new stream, wait for response."""
-        if not self._connected:
-            await self.ensure_connected()
+        async with self._stream_sem:
+            if not self._connected:
+                await self.ensure_connected()
 
-        stream_id = None
+            stream_id = None
+            state = None
 
-        async with self._write_lock:
+            async with self._write_lock:
+                try:
+                    stream_id = self._h2.get_next_available_stream_id()
+                except Exception:
+                    # Connection is stale — reconnect.
+                    await self.reconnect()
+                    stream_id = self._h2.get_next_available_stream_id()
+
+                h2_headers = [
+                    (":method", method),
+                    (":path", path),
+                    (":authority", host),
+                    (":scheme", "https"),
+                    ("accept-encoding", codec.supported_encodings()),
+                ]
+
+                if headers:
+                    for k, v in headers.items():
+                        lk = str(k).lower()
+
+                        # Do not forward HTTP/1.x hop-by-hop headers into H2.
+                        # Some of these can cause protocol instability or
+                        # unnecessary stream failures.
+                        if lk in {
+                            "connection",
+                            "proxy-connection",
+                            "keep-alive",
+                            "transfer-encoding",
+                            "upgrade",
+                            "host",
+                        }:
+                            continue
+
+                        h2_headers.append((lk, str(v)))
+
+                state = _StreamState()
+                self._streams[stream_id] = state
+                self.total_streams += 1
+
+                end_stream = not body
+                self._h2.send_headers(stream_id, h2_headers, end_stream=end_stream)
+
+                if body:
+                    # Send body, respecting H2 flow-control limits.
+                    self._send_body(stream_id, body)
+
+                await self._flush()
+
+            # Wait for complete response.
             try:
-                stream_id = self._h2.get_next_available_stream_id()
+                await asyncio.wait_for(state.done.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                await self._reset_stream_safely(stream_id, "timeout")
+                self._streams.pop(stream_id, None)
+                raise TimeoutError(
+                    f"H2 stream {stream_id} timed out ({float(timeout):.1f}s)"
+                )
+            except asyncio.CancelledError:
+                await self._reset_stream_safely(stream_id, "cancelled")
+                self._streams.pop(stream_id, None)
+                raise
             except Exception:
-                # Connection is stale — reconnect
-                await self.reconnect()
-                stream_id = self._h2.get_next_available_stream_id()
+                await self._reset_stream_safely(stream_id, "error")
+                self._streams.pop(stream_id, None)
+                raise
 
-            h2_headers = [
-                (":method", method),
-                (":path", path),
-                (":authority", host),
-                (":scheme", "https"),
-                ("accept-encoding", codec.supported_encodings()),
-            ]
-            if headers:
-                for k, v in headers.items():
-                    h2_headers.append((k.lower(), str(v)))
-
-            end_stream = not body
-            self._h2.send_headers(stream_id, h2_headers, end_stream=end_stream)
-
-            if body:
-                # Send body (may need chunking for flow control)
-                self._send_body(stream_id, body)
-
-            state = _StreamState()
-            self._streams[stream_id] = state
-            self.total_streams += 1
-
-            await self._flush()
-
-        # Wait for complete response
-        try:
-            await asyncio.wait_for(state.done.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
             self._streams.pop(stream_id, None)
-            raise TimeoutError(
-                f"H2 stream {stream_id} timed out ({float(timeout):.1f}s)"
-            )
 
-        self._streams.pop(stream_id, None)
+            if state.error:
+                raise ConnectionError(f"H2 stream error: {state.error}")
 
-        if state.error:
-            raise ConnectionError(f"H2 stream error: {state.error}")
+            # Auto-decompress gzip / deflate / brotli / zstd.
+            resp_body = bytes(state.data)
+            enc = state.headers.get("content-encoding", "")
+            if enc:
+                resp_body = codec.decode(resp_body, enc)
 
-        # Auto-decompress (gzip / deflate / brotli / zstd)
-        resp_body = bytes(state.data)
-        enc = state.headers.get("content-encoding", "")
-        if enc:
-            resp_body = codec.decode(resp_body, enc)
-
-        return state.status, state.headers, resp_body
+            return state.status, state.headers, resp_body
 
     def _send_body(self, stream_id: int, body: bytes):
         """Send request body, respecting H2 flow control window.
@@ -466,6 +499,32 @@ class H2Transport:
             pass  # keepalive confirmed
 
     # ── Internal ──────────────────────────────────────────────────
+
+    async def _reset_stream_safely(self, stream_id: int | None, reason: str = ""):
+        """Reset a stuck H2 stream so it does not remain open remotely."""
+        if stream_id is None or not self._connected or not self._h2:
+            return
+
+        try:
+            async with self._write_lock:
+                if not self._connected or not self._h2:
+                    return
+
+                try:
+                    self._h2.reset_stream(stream_id)
+                except Exception:
+                    return
+
+                await self._flush()
+
+            log.debug("H2 stream reset -> id=%s reason=%s", stream_id, reason)
+        except Exception as exc:
+            log.debug(
+                "H2 stream reset failed -> id=%s reason=%s error=%s",
+                stream_id,
+                reason,
+                exc,
+            )
 
     async def _flush(self):
         """Write pending H2 frame data to the socket."""

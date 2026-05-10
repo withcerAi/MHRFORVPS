@@ -18,6 +18,8 @@ let lastStatsSnapshot = null;
 let lastLogs = {
   live: [],
   errors: [],
+  full_errors: [],
+  script_errors: [],
   downloads: [],
   video: [],
   sabr: [],
@@ -32,6 +34,7 @@ let speedHistory = { rx: [], tx: [], client: [] };
 
 let activeTab = localStorage.getItem("mhr.tab") || "overview";
 let activeLog = localStorage.getItem("mhr.logtab") || "live";
+if (activeLog === "errors") activeLog = "full_errors";
 let activeCfgTab = localStorage.getItem("mhr.cfgtab") || "network";
 let viewMode = localStorage.getItem("mhr.viewMode") || "advanced";
 
@@ -74,6 +77,7 @@ const BASIC_FA = {
   "Video Passthrough": "عبور مستقیم ویدیو",
   "Auto Tune": "تنظیم خودکار",
   "Safe Mode": "حالت امن",
+  "H2 Healer": "هیلر H2",
   "Script Optimizer": "بهینه‌ساز اسکریپت",
   "Optimizer ready": "بهینه‌ساز آماده است",
   "Optimizer load failed": "لود بهینه‌ساز شکست خورد",
@@ -160,6 +164,7 @@ function tx(value) {
   s = s.replace(/Manifest Prefetch/g, BASIC_FA["Manifest Prefetch"]);
   s = s.replace(/Video Passthrough/g, BASIC_FA["Video Passthrough"]);
   s = s.replace(/Auto Tune/g, BASIC_FA["Auto Tune"]);
+  s = s.replace(/H2 Healer/g, BASIC_FA["H2 Healer"]);
   s = s.replace(/No logs/g, BASIC_FA["No logs"]);
   s = s.replace(/No errors/g, BASIC_FA["No errors"]);
 
@@ -537,7 +542,7 @@ async function clearLog(name) {
 }
 
 function clearActiveLog() {
-  return clearLog(activeLog);
+  return clearLog(activeLog === "errors" ? "full_errors" : activeLog);
 }
 
 function copyActiveLog() {
@@ -581,6 +586,10 @@ function parseLogLine(line, fallbackType) {
   const low = rawLine.toLowerCase();
   let kind = "";
 
+  if (low.includes("runtime config applied")) {
+    return { raw: rawLine, time, level, source, text, kind: "" };
+  }
+
   if (
     low.includes("error") ||
     low.includes("failed") ||
@@ -601,7 +610,10 @@ function parseLogLine(line, fallbackType) {
     low.includes("status=504")
   ) kind = "error";
   else if (low.includes("warn") || low.includes("limit")) kind = "warn";
-  else if (fallbackType === "h2") kind = "warn";
+  else if (fallbackType === "script_errors") kind = "error";
+  else if (fallbackType === "full_errors") kind = "error";
+  else if (fallbackType === "script_errors" || fallbackType === "full_errors" || fallbackType === "errors") kind = "error";
+  else if (fallbackType === "full_errors" || fallbackType === "script_errors" || fallbackType === "h2") kind = "warn";
   else if (fallbackType === "video" || fallbackType === "sabr") kind = "video";
   else if (fallbackType === "downloads") kind = "download";
 
@@ -613,15 +625,30 @@ function filterLines(lines, q) {
   return q ? lines.filter((x) => String(x).toLowerCase().includes(q)) : lines;
 }
 
+
+function formatLogTabName(name) {
+  const map = {
+    live: "All / Live",
+    errors: "Errors",
+    script_errors: "Script Errors",
+    full_errors: "Full Errors",
+    downloads: "Downloads",
+    video: "Video",
+    sabr: "SABR",
+    h2: "H2"
+  };
+  return map[name] || name;
+}
+
 function renderLogs() {
-  const tabs = ["live", "errors", "downloads", "video", "sabr", "h2"];
+  const tabs = ["live", "full_errors", "script_errors", "downloads", "video", "sabr", "h2"];
 
   tabs.forEach((name) => {
     $("logtab_" + name)?.classList.toggle("active", name === activeLog);
     setText("count_" + name, (lastLogs[name] || []).length ? `(${(lastLogs[name] || []).length})` : "");
   });
 
-  setText("activeLogLabel", tx(activeLog));
+  setText("activeLogLabel", tx(formatLogTabName(activeLog)));
 
   const q = $("logSearch")?.value || "";
   const lines = filterLines(lastLogs[activeLog] || [], q).slice(-220);
@@ -672,7 +699,8 @@ function isSafeModeActive(c) {
     c.video_prefetch_disabled_by_dashboard &&
     c.manifest_prefetch_disabled_by_dashboard &&
     c.video_passthrough_disabled_by_dashboard &&
-    c.h2_disabled_by_dashboard
+    c.h2_disabled_by_dashboard &&
+    c.h2_healer_disabled_by_dashboard
   );
 }
 
@@ -713,6 +741,13 @@ function updateToggleButtons(c) {
   if (h2) {
     h2.className = h2On ? "good" : "bad";
     h2.textContent = h2On ? tx("H2: ON") : tx("H2: OFF");
+  }
+
+  const h2HealerOn = !!c.h2_healer_enabled;
+  const h2Healer = $("h2HealerBtn");
+  if (h2Healer) {
+    h2Healer.className = h2HealerOn ? "good" : "bad";
+    h2Healer.textContent = tx("H2 Healer") + ": " + (h2HealerOn ? t("common.on", "ON") : t("common.off", "OFF"));
   }
 
   updateSafeModeButtons(c);
@@ -1527,9 +1562,10 @@ function render(s) {
   // are WARNING/timeout/H2/front-IP events and may not increment stats.errors.
   const statErrors = Number(s.errors || 0);
   const logErrors = Number(
+    s.dashboard_log_full_errors ??
     s.dashboard_log_errors ??
-    (s.dashboard_log_counts && s.dashboard_log_counts.errors) ??
-    (lastLogs.errors ? lastLogs.errors.length : 0) ??
+    (s.dashboard_log_counts && (s.dashboard_log_counts.full_errors ?? s.dashboard_log_counts.errors)) ??
+    (lastLogs.full_errors ? lastLogs.full_errors.length : 0) ??
     0
   );
   const visibleErrors = Math.max(statErrors, logErrors);
@@ -1570,6 +1606,12 @@ function render(s) {
   setText("h2Status", h2Text);
   setClass("h2Status", "value " + (h2State === "good" ? "goodText" : h2State === "bad" ? "badText" : "warnText"));
   setBadge("h2MiniBadge", h2Text, h2State);
+  setText(
+    "h2HealerMeta",
+    "Healer: " + (c.h2_healer_enabled ? "ON" : "OFF") +
+    " · delay " + (c.h2_healer_delay_seconds ?? "-") + "s" +
+    " · cooldown " + (c.h2_healer_cooldown_seconds ?? "-") + "s"
+  );
 
   setText("errorRate", errRateText);
   setClass("errorRate", "value " + (errSt === "good" ? "goodText" : errSt === "bad" ? "badText" : "warnText"));
@@ -1664,6 +1706,7 @@ function render(s) {
     tile("Telegram", yn(!!c.telegram_mode_enabled), c.telegram_mode_enabled ? "Telegram profile active" : "Standard relay", c.telegram_mode_enabled ? "good" : "bad"),
     tile("Turbo", yn(turboOn), turboOn ? "Acceleration enabled" : "Acceleration disabled", turboOn ? "good" : "bad"),
     tile("H2", c.h2_status_text || yn(!!c.h2_dashboard_on), h2Text, h2State),
+    tile("H2 Healer", yn(!!c.h2_healer_enabled), "Delay " + (c.h2_healer_delay_seconds ?? "-") + "s · cooldown " + (c.h2_healer_cooldown_seconds ?? "-") + "s", c.h2_healer_enabled ? "good" : "bad"),
     tile("SABR", yn(sabrOn), sabrOn ? "Booster enabled" : "Booster disabled", sabrOn ? "good" : "bad"),
     tile("Video Prefetch", yn(!!c.video_prefetch_enabled), "Range lookahead", c.video_prefetch_enabled ? "good" : "bad"),
     tile("Manifest Prefetch", yn(!!c.manifest_prefetch_enabled), "Manifest lookahead", c.manifest_prefetch_enabled ? "good" : "bad"),
@@ -1676,6 +1719,7 @@ function render(s) {
     pill("Telegram", !!c.telegram_mode_enabled),
     pill("Turbo", turboOn),
     pill("H2", !!c.h2_dashboard_on),
+    pill("H2 Healer", !!c.h2_healer_enabled),
     pill("SABR", sabrOn),
     pill("Range Prefetch", !!c.video_prefetch_enabled),
     pill("Manifest Prefetch", !!c.manifest_prefetch_enabled),
@@ -1690,6 +1734,9 @@ function render(s) {
     "Manifest Parallel": c.manifest_prefetch_parallel ?? "-",
     "Turbo Padding": fmtBytes(c.turbo_min_upload_padding || 0),
     "Telegram Mode": c.telegram_mode_enabled ? "ON" : "OFF",
+    "H2 Healer": c.h2_healer_enabled ? "ON" : "OFF",
+    "H2 Healer Delay": (c.h2_healer_delay_seconds ?? "-") + "s",
+    "H2 Healer Cooldown": (c.h2_healer_cooldown_seconds ?? "-") + "s",
     "Auto Ready": c.auto_mode_ready ? "YES" : "NO",
     "Auto Reason": c.auto_tune_last_reason || "-"
   }, true);
@@ -1726,6 +1773,7 @@ function render(s) {
     "turbo_skip_download_mode", "turbo_coalesce_window_ms", "turbo_small_request_max",
     "turbo_min_upload_padding", "turbo_chunk_size", "turbo_min_size",
     "h2_dashboard_on", "h2_status_text", "h2_connections", "h2_live_connections",
+    "h2_healer_enabled", "h2_healer_delay_seconds", "h2_healer_cooldown_seconds", "h2_healer_check_interval",
     "youtube_sabr_booster_enabled", "video_prefetch_enabled", "manifest_prefetch_enabled",
     "video_passthrough_enabled"
   ]));
@@ -1850,6 +1898,7 @@ function render(s) {
   setHTML("diagnosticSignals", [
     healthBox("Exit Node", exitOnline ? "ONLINE" : "OFFLINE", ehErr, exitOnline ? "good" : "bad"),
     healthBox("H2", h2Text, "Live " + (c.h2_live_connections ?? "-") + " / " + (c.h2_connections ?? "-"), h2State),
+    healthBox("H2 Healer", c.h2_healer_enabled ? "ON" : "OFF", "Delay " + (c.h2_healer_delay_seconds ?? "-") + "s · cooldown " + (c.h2_healer_cooldown_seconds ?? "-") + "s", c.h2_healer_enabled ? "good" : "bad"),
     healthBox("Error Rate", errRateText, visibleErrors + " visible errors", errSt),
     healthBox("Front Health", frontStateFromStats(c)[0], "Recent timeouts: " + (c.front_ip_recent_timeouts || 0), frontStateFromStats(c)[1]),
     healthBox("SABR", sabrOn ? "ON" : "OFF", "Success rate: " + (s.sabr_success_rate ?? "-"), sabrOn ? "good" : "bad"),
@@ -1865,7 +1914,7 @@ function render(s) {
     "CPU %": s.system?.cpu_percent ?? "-"
   });
 
-  raw("recentErrors", (lastLogs.errors || []).slice(-80).join("\n") || "No errors");
+  raw("recentErrors", (lastLogs.full_errors || lastLogs.errors || []).slice(-80).join("\n") || "No errors");
   raw("rawStats", s);
 
   const scriptRows = (s.script_ids || []).map((x) => {
@@ -1944,7 +1993,21 @@ async function refresh() {
     if (logsResp) {
       if (!logsResp.ok) throw new Error("logs HTTP " + logsResp.status);
       const logs = await logsResp.json();
-      lastLogs = Object.assign({ live: [], errors: [], downloads: [], video: [], sabr: [], h2: [] }, logs || {});
+      lastLogs = Object.assign({
+        live: [],
+        errors: [],
+        full_errors: [],
+        script_errors: [],
+        downloads: [],
+        video: [],
+        sabr: [],
+        h2: []
+      }, logs || {});
+
+      if (!lastLogs.full_errors || !lastLogs.full_errors.length) {
+        lastLogs.full_errors = lastLogs.errors || [];
+      }
+      lastLogs.errors = lastLogs.full_errors;
     }
 
     render(s);

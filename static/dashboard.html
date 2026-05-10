@@ -113,6 +113,7 @@
       <button id="tgBtn" onclick="toggleFeature('telegram')" data-i18n="feature.telegram">Telegram</button>
       <button id="turboBtn" onclick="toggleFeature('turbo')" data-i18n="feature.turbo">Turbo</button>
       <button id="h2Btn" onclick="toggleFeature('h2')" data-i18n="feature.h2">H2</button>
+      <button id="h2HealerBtn" onclick="toggleFeature('h2_healer')">H2 Healer</button>
       <button id="sabrBtn" onclick="toggleFeature('sabr')" data-i18n="feature.sabr">SABR</button>
       <button id="vpBtn" onclick="toggleFeature('video_prefetch')" data-i18n="feature.videoPrefetch">Video Prefetch</button>
       <button id="mpBtn" onclick="toggleFeature('manifest_prefetch')" data-i18n="feature.manifestPrefetch">Manifest Prefetch</button>
@@ -200,6 +201,7 @@
         </div>
         <div class="value" id="h2Status">-</div>
         <div class="meta" id="h2Meta">Live backend H2 pool status</div>
+        <div class="meta" id="h2HealerMeta">Healer: -</div>
       </div>
 
       <div class="card c3" id="errorOverviewCard">
@@ -606,7 +608,7 @@
         <div class="head">
           <div>
             <h2 data-i18n="section.logsConsole">Logs Console</h2>
-            <div class="panelSub" data-i18n="section.logsConsoleSub">Live, errors, downloads, video and SABR logs</div>
+            <div class="panelSub" data-i18n="section.logsConsoleSub">Live, full errors, script errors, downloads, video, SABR and H2 logs</div>
           </div>
           <div class="pills">
             <span class="pill info"><span data-i18n="log.tab">Tab</span>: <b id="activeLogLabel">live</b></span>
@@ -616,7 +618,8 @@
 
         <div class="subTabs">
           <button id="logtab_live" onclick="setLogTab('live')">All / Live <span id="count_live"></span></button>
-          <button id="logtab_errors" onclick="setLogTab('errors')">Errors <span id="count_errors"></span></button>
+          <button id="logtab_full_errors" onclick="setLogTab('full_errors')">Full Errors <span id="count_full_errors"></span></button>
+          <button id="logtab_script_errors" onclick="setLogTab('script_errors')">Script Errors <span id="count_script_errors"></span></button>
           <button id="logtab_downloads" onclick="setLogTab('downloads')">Downloads <span id="count_downloads"></span></button>
           <button id="logtab_video" onclick="setLogTab('video')">Video <span id="count_video"></span></button>
           <button id="logtab_sabr" onclick="setLogTab('sabr')">SABR <span id="count_sabr"></span></button>

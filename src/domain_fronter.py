@@ -184,6 +184,13 @@ class DomainFronter:
         self._sid_blacklist: dict[str, float] = {}
         self._blacklist_ttl = 20  # hard-disabled script TTL seconds
         self._sid_failure_counts: dict[str, int] = {}
+
+        # Runtime strike memory.
+        # Older code used these fields before initializing them, so transient
+        # script warnings could fail to accumulate correctly.
+        self._script_strikes: dict[str, int] = {}
+        self._script_last_reason: dict[str, str] = {}
+
         self._sid_last_blacklist_events: list[dict] = []
 
         # Per-host stats (requests, cache hits, bytes, cumulative latency).
@@ -265,6 +272,26 @@ class DomainFronter:
         self._front_ip_warning_cooldown = self._cfg_float(
             config, "front_ip_diagnostic_warning_cooldown", 30.0, minimum=5.0,
         )
+
+        # PATCH_H2_DELAYED_HEALER_START
+        # Delayed H2 healer:
+        # - Do not rebuild immediately when live H2 drops, because transient network
+        #   loss or bad front IP can make aggressive rebuilds worse.
+        # - Wait first, re-check, then rebuild only if the pool is still partial.
+        # - Cool down after each rebuild attempt.
+        self._h2_healer_enabled = bool(config.get("h2_healer_enabled", True))
+        self._h2_healer_delay_seconds = self._cfg_float(
+            config, "h2_healer_delay_seconds", 20.0, minimum=5.0,
+        )
+        self._h2_healer_cooldown_seconds = self._cfg_float(
+            config, "h2_healer_cooldown_seconds", 90.0, minimum=20.0,
+        )
+        self._h2_healer_check_interval = self._cfg_float(
+            config, "h2_healer_check_interval", 5.0, minimum=2.0,
+        )
+        self._h2_healer_last_attempt_at = 0.0
+        self._h2_healer_task: asyncio.Task | None = None
+        # PATCH_H2_DELAYED_HEALER_END
 
         # HTTP/2 multiplexing pool
         self._h2 = None
@@ -465,10 +492,11 @@ class DomainFronter:
             )
 
             log.warning(
-                "H2 temporarily disabled for %.0fs after %d consecutive failures (%s)",
+                "H2 temporarily disabled for %.0fs after %d consecutive failures (%s: %s)",
                 self._H2_FAILURE_COOLDOWN,
                 self._h2_failure_streak,
                 type(exc).__name__,
+                str(exc)[:180],
             )
 
     @staticmethod
@@ -780,25 +808,32 @@ class DomainFronter:
                 self._sid_blacklist.pop(sid, None)
 
     def _pick_fanout_sids(self, key: str | None) -> list[str]:
-        """Pick up to `parallel_relay` distinct non-blacklisted script IDs.
-
-        The first ID is the stable per-host choice (same as single-shot
-        routing); the rest are filled from the remaining pool. This keeps
-        session-sensitive hosts pinned to one script while still racing
-        extras for lower tail latency.
-        """
+        """Pick a small safe set of distinct non-blacklisted script IDs."""
         limit = int(getattr(self, "_current_fanout_limit", self._parallel_relay) or self._parallel_relay)
+        limit = max(1, min(limit, len(getattr(self, "_script_ids", []) or [])))
+
         if limit <= 1 or len(self._script_ids) <= 1:
             return [self._script_id_for_key(key)]
+
         primary = self._script_id_for_key(key)
         picked = [primary]
-        others = [s for s in self._script_ids
-                  if s != primary and not self._is_sid_blacklisted(s)]
-        # Round-robin-ish selection from `others`
-        for sid in others:
+
+        available = [
+            s for s in self._available_script_ids()
+            if s != primary
+        ]
+
+        start = int(getattr(self, "_script_idx", 0) or 0)
+        if available:
+            rotated = available[start % len(available):] + available[:start % len(available)]
+        else:
+            rotated = []
+
+        for sid in rotated:
             if len(picked) >= limit:
                 break
             picked.append(sid)
+
         return picked
 
     @staticmethod
@@ -865,12 +900,41 @@ class DomainFronter:
         return self._retry_attempts_for_payload(payload)
 
     def _fanout_limit_for_payload(self, payload: dict) -> int:
+        """
+        Return a safe fanout count.
+
+        Important:
+        H2 remote/frontend commonly enforces a low active-stream limit.
+        If every browser request fans out to many Apps Script deployments,
+        the H2 transport can hit TooManyStreamsError even while connections
+        look healthy. Keep fanout conservative and let H2 multiplexing carry
+        normal concurrency.
+        """
+        script_count = len(getattr(self, "_script_ids", []) or [])
+        if script_count <= 1:
+            return 1
+
+        base = int(getattr(self, "_parallel_relay", 1) or 1)
+
         if self._is_video_priority_payload(payload):
-            return max(
-                int(getattr(self, "_parallel_relay", 1) or 1),
+            wanted = max(
+                base,
                 int(getattr(self, "_video_priority_parallel_relay", 1) or 1),
             )
-        return int(getattr(self, "_parallel_relay", 1) or 1)
+        else:
+            wanted = base
+
+        # During H2 rebuild/cooldown, do not create a fanout storm.
+        if bool(getattr(self, "_h2_rebuilding", False)) or time.time() < float(getattr(self, "_h2_disabled_until", 0.0) or 0.0):
+            return 1
+
+        # Hard safety cap:
+        # 3 is usually enough to race slow Apps Script containers without
+        # filling the remote H2 MAX_CONCURRENT_STREAMS window.
+        wanted = min(wanted, 3)
+
+        # Never exceed available script count.
+        return max(1, min(wanted, script_count))
 
     async def _video_retry_sleep(self, payload: dict, attempt: int):
         if not self._is_video_priority_payload(payload):
@@ -1230,6 +1294,12 @@ class DomainFronter:
         # Start H2 connection (runs alongside H1 pool)
         if self._h2:
             self._spawn(self._h2_connect_and_warm())
+        # PATCH_H2_DELAYED_HEALER_START
+        if self._h2_pool and self._h2_healer_enabled:
+            if self._h2_healer_task is None or self._h2_healer_task.done():
+                self._h2_healer_task = self._spawn(self._h2_healer_loop())
+        # PATCH_H2_DELAYED_HEALER_END
+            self._spawn(self._h2_pool_healer())
         # H1 container keepalive — runs unconditionally so the Apps Script
         # container never goes cold even when H2 is unavailable.  When H2 IS
         # active its _keepalive_loop skips the ping; they do not double-fire.
@@ -1241,6 +1311,145 @@ class DomainFronter:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    # PATCH_H2_DELAYED_HEALER_START
+    def _h2_live_count(self) -> int:
+        try:
+            return sum(1 for h in getattr(self, "_h2_pool", []) or [] if getattr(h, "is_connected", False))
+        except Exception:
+            return 0
+
+    def _h2_total_count(self) -> int:
+        try:
+            return len(getattr(self, "_h2_pool", []) or [])
+        except Exception:
+            return 0
+
+    def _h2_front_ip_unhealthy_for_heal(self) -> bool:
+        """
+        Avoid healing when the front-IP path itself looks unhealthy.
+        If the network/path is unstable, rebuilding H2 repeatedly can make it worse.
+        """
+        try:
+            recent = len(getattr(self, "_front_ip_timeout_window", []) or [])
+            threshold = int(getattr(self, "_front_ip_timeout_threshold", 5) or 5)
+            # Skip earlier than the hard unhealthy threshold so we do not amplify pressure.
+            return threshold > 0 and recent >= max(1, threshold // 2)
+        except Exception:
+            return False
+
+    async def _h2_healer_loop(self):
+        log.info(
+            "H2 delayed healer active: delay=%.0fs cooldown=%.0fs check=%.0fs",
+            getattr(self, "_h2_healer_delay_seconds", 20.0),
+            getattr(self, "_h2_healer_cooldown_seconds", 90.0),
+            getattr(self, "_h2_healer_check_interval", 5.0),
+        )
+
+        while True:
+            try:
+                await asyncio.sleep(float(getattr(self, "_h2_healer_check_interval", 5.0) or 5.0))
+
+                if not bool(getattr(self, "_h2_healer_enabled", True)):
+                    continue
+
+                total = self._h2_total_count()
+                if total <= 0:
+                    continue
+
+                if bool(getattr(self, "_h2_rebuilding", False)):
+                    continue
+
+                now = time.time()
+
+                disabled_until = float(getattr(self, "_h2_disabled_until", 0.0) or 0.0)
+                if disabled_until > now:
+                    continue
+
+                last_attempt = float(getattr(self, "_h2_healer_last_attempt_at", 0.0) or 0.0)
+                cooldown = float(getattr(self, "_h2_healer_cooldown_seconds", 90.0) or 90.0)
+                if last_attempt and (now - last_attempt) < cooldown:
+                    continue
+
+                if self._h2_front_ip_unhealthy_for_heal():
+                    log.warning(
+                        "H2 healer skipped: front-IP timeout signal active recent=%s threshold=%s",
+                        len(getattr(self, "_front_ip_timeout_window", []) or []),
+                        getattr(self, "_front_ip_timeout_threshold", "-"),
+                    )
+                    self._h2_healer_last_attempt_at = now
+                    continue
+
+                live = self._h2_live_count()
+
+                # Healthy enough.
+                if live >= total:
+                    continue
+
+                # Fully down is handled by existing reconnect/fallback logic.
+                # Healer focuses on partial pools like 2/3.
+                if live <= 0:
+                    continue
+
+                delay = float(getattr(self, "_h2_healer_delay_seconds", 20.0) or 20.0)
+                log.warning(
+                    "H2 healer: partial pool %s/%s, waiting %.0fs before rebuild",
+                    live,
+                    total,
+                    delay,
+                )
+
+                await asyncio.sleep(delay)
+
+                if not bool(getattr(self, "_h2_healer_enabled", True)):
+                    continue
+
+                if bool(getattr(self, "_h2_rebuilding", False)):
+                    continue
+
+                now = time.time()
+                disabled_until = float(getattr(self, "_h2_disabled_until", 0.0) or 0.0)
+                if disabled_until > now:
+                    continue
+
+                if self._h2_front_ip_unhealthy_for_heal():
+                    log.warning(
+                        "H2 healer skipped after delay: front-IP timeout signal active recent=%s threshold=%s",
+                        len(getattr(self, "_front_ip_timeout_window", []) or []),
+                        getattr(self, "_front_ip_timeout_threshold", "-"),
+                    )
+                    self._h2_healer_last_attempt_at = now
+                    continue
+
+                live2 = self._h2_live_count()
+                total2 = self._h2_total_count()
+
+                if total2 <= 0:
+                    continue
+
+                if live2 >= total2:
+                    log.info("H2 healer: pool recovered naturally %s/%s", live2, total2)
+                    continue
+
+                if live2 <= 0:
+                    log.warning("H2 healer skipped: pool fully down %s/%s, existing reconnect/fallback will handle it", live2, total2)
+                    self._h2_healer_last_attempt_at = now
+                    continue
+
+                self._h2_healer_last_attempt_at = now
+                log.warning("H2 healer: rebuilding pool after delayed check %s/%s", live2, total2)
+
+                await self.apply_h2_connections(total2)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                try:
+                    self._h2_healer_last_attempt_at = time.time()
+                except Exception:
+                    pass
+                log.warning("H2 healer loop error: %s", exc)
+    # PATCH_H2_DELAYED_HEALER_END
 
     async def close(self):
         """Cancel background tasks and close all pooled / H2 connections."""
@@ -1255,6 +1464,9 @@ class DomainFronter:
         self._maintenance_task = None
         self._stats_task = None
         self._keepalive_task = None
+        # PATCH_H2_DELAYED_HEALER_START
+        self._h2_healer_task = None
+        # PATCH_H2_DELAYED_HEALER_END
 
         await self._flush_pool()
 
@@ -1310,6 +1522,83 @@ class DomainFronter:
             self._spawn(self._prewarm_script())
             if self._keepalive_task is None or self._keepalive_task.done():
                 self._keepalive_task = self._spawn(self._keepalive_loop())
+
+
+    async def _h2_pool_healer(self):
+        """Reconnect partially dead H2 pool connections.
+
+        Example: if dashboard stays ON 2/3, this periodically tries to bring
+        the dead connection back without requiring a mode switch or restart.
+        """
+        while True:
+            try:
+                await asyncio.sleep(20)
+
+                if not getattr(self, "_h2_pool", None):
+                    continue
+
+                if bool(getattr(self, "_h2_rebuilding", False)):
+                    continue
+
+                if time.time() < float(getattr(self, "_h2_disabled_until", 0.0) or 0.0):
+                    continue
+
+                total = len(self._h2_pool)
+                dead = []
+
+                for transport in self._h2_pool:
+                    try:
+                        if not bool(getattr(transport, "is_connected", False)):
+                            dead.append(transport)
+                    except Exception:
+                        dead.append(transport)
+
+                if not dead:
+                    continue
+
+                log.info("H2 pool heal: reconnecting %d/%d dead connections", len(dead), total)
+
+                timeout = max(
+                    5.0,
+                    float(getattr(self, "_h2_connect_timeout", 20.0) or 20.0) + 5.0,
+                )
+
+                results = await asyncio.gather(
+                    *[
+                        asyncio.wait_for(transport.ensure_connected(), timeout=timeout)
+                        for transport in dead
+                    ],
+                    return_exceptions=True,
+                )
+
+                healed = sum(1 for item in results if not isinstance(item, Exception))
+
+                live_after = 0
+                for transport in self._h2_pool:
+                    try:
+                        if bool(getattr(transport, "is_connected", False)):
+                            live_after += 1
+                    except Exception:
+                        pass
+
+                if healed:
+                    self._record_h2_success()
+                    log.info(
+                        "H2 pool heal complete: live=%d/%d healed=%d",
+                        live_after,
+                        total,
+                        healed,
+                    )
+                else:
+                    exc = next((item for item in results if isinstance(item, Exception)), None)
+                    if exc is not None:
+                        self._record_h2_failure(exc)
+                    log.warning("H2 pool heal failed: live=%d/%d", live_after, total)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                log.debug("H2 pool healer error: %s", exc)
 
     async def _prewarm_script(self):
         """Pre-warm Apps Script and detect /dev fast path (no redirect)."""
@@ -1542,6 +1831,7 @@ class DomainFronter:
             "h2_available": bool(self._h2_available()),
             "h2_disabled_until": max(0, int(getattr(self, "_h2_disabled_until", 0) - now)),
             "h2_rebuilding": bool(getattr(self, "_h2_rebuilding", False)),
+            "h2_failure_streak": int(getattr(self, "_h2_failure_streak", 0) or 0),
             "front_ip": getattr(self, "connect_host", "-"),
             "front_ip_recent_timeouts": len(getattr(self, "_front_ip_timeout_window", []) or []),
             "front_ip_diagnostic_threshold": getattr(self, "_front_ip_timeout_threshold", "-"),
@@ -1573,6 +1863,14 @@ class DomainFronter:
             "video_priority_retry_attempts": getattr(self, "_video_priority_retry_attempts", "-"),
             "video_priority_retry_delay_ms": getattr(self, "_video_priority_retry_delay_ms", "-"),
             "video_priority_parallel_relay": getattr(self, "_video_priority_parallel_relay", "-"),
+
+            # PATCH_H2_DELAYED_HEALER_START
+            "h2_healer_enabled": bool(getattr(self, "_h2_healer_enabled", True)),
+            "h2_healer_delay_seconds": getattr(self, "_h2_healer_delay_seconds", "-"),
+            "h2_healer_cooldown_seconds": getattr(self, "_h2_healer_cooldown_seconds", "-"),
+            "h2_healer_check_interval": getattr(self, "_h2_healer_check_interval", "-"),
+            "h2_healer_last_attempt_age": int(max(0, time.time() - float(getattr(self, "_h2_healer_last_attempt_at", 0.0) or 0.0))) if getattr(self, "_h2_healer_last_attempt_at", 0.0) else 0,
+            # PATCH_H2_DELAYED_HEALER_END
         }
 
     def apply_runtime_config(self, config: dict) -> None:
@@ -1626,8 +1924,30 @@ class DomainFronter:
             vpr = self._cfg_int(config, "video_priority_parallel_relay", self._video_priority_parallel_relay, minimum=1)
             self._video_priority_parallel_relay = max(1, min(vpr, len(self._script_ids)))
 
+            # PATCH_H2_DELAYED_HEALER_START
+            self._h2_healer_enabled = bool(config.get("h2_healer_enabled", getattr(self, "_h2_healer_enabled", True)))
+            self._h2_healer_delay_seconds = self._cfg_float(
+                config,
+                "h2_healer_delay_seconds",
+                getattr(self, "_h2_healer_delay_seconds", 20.0),
+                minimum=5.0,
+            )
+            self._h2_healer_cooldown_seconds = self._cfg_float(
+                config,
+                "h2_healer_cooldown_seconds",
+                getattr(self, "_h2_healer_cooldown_seconds", 90.0),
+                minimum=20.0,
+            )
+            self._h2_healer_check_interval = self._cfg_float(
+                config,
+                "h2_healer_check_interval",
+                getattr(self, "_h2_healer_check_interval", 5.0),
+                minimum=2.0,
+            )
+            # PATCH_H2_DELAYED_HEALER_END
+
             log.info(
-                "Fronter runtime applied: timeout=%s parallel=%s h2=%s batch=%s sub_batch=%s batch_max=%s video_parallel=%s",
+                "Fronter runtime applied: timeout=%s parallel=%s h2=%s batch=%s sub_batch=%s batch_max=%s video_parallel=%s h2_healer=%s delay=%ss cooldown=%ss",
                 self._relay_timeout,
                 self._parallel_relay,
                 len(self._h2_pool),
@@ -1635,6 +1955,9 @@ class DomainFronter:
                 self._sub_batch_enabled,
                 self._batch_max,
                 self._video_priority_parallel_relay,
+                self._h2_healer_enabled,
+                self._h2_healer_delay_seconds,
+                self._h2_healer_cooldown_seconds,
             )
         except Exception as exc:
             log.warning("Fronter runtime apply failed: %s", exc)

@@ -147,6 +147,11 @@ def _base_profile() -> dict[str, Any]:
         "parallel_relay": 1,
         "h2_connections": 1,
 
+        "h2_healer_enabled": True,
+        "h2_healer_delay_seconds": 20,
+        "h2_healer_cooldown_seconds": 90,
+        "h2_healer_check_interval": 5,
+
         "enable_batch": True,
         "enable_sub_batch": False,
         "batch_window_micro": 0.02,
