@@ -1785,11 +1785,21 @@ def apply_runtime_profile(config, mode):
     config["runtime_mode"] = "auto" if auto_mode else key
 
     config["video_prefetch_disabled_by_dashboard"] = keep["video_prefetch_disabled_by_dashboard"]
-    config["video_prefetch_enabled"] = False if keep["video_prefetch_disabled_by_dashboard"] else keep["video_prefetch_enabled"]
     config["manifest_prefetch_disabled_by_dashboard"] = keep["manifest_prefetch_disabled_by_dashboard"]
-    config["manifest_prefetch_enabled"] = False if keep["manifest_prefetch_disabled_by_dashboard"] else keep["manifest_prefetch_enabled"]
     config["video_passthrough_disabled_by_dashboard"] = keep["video_passthrough_disabled_by_dashboard"]
-    config["video_passthrough_enabled"] = False if keep["video_passthrough_disabled_by_dashboard"] else keep["video_passthrough_enabled"]
+
+    # DOWNLOAD_MODE_PROFILE_RESPECT_FIX
+    # Respect the selected runtime profile.
+    # Dashboard-disabled flags may force a feature OFF, but old mode state must not
+    # force profile-disabled features back ON. This is critical for Download mode.
+    if keep["video_prefetch_disabled_by_dashboard"]:
+        config["video_prefetch_enabled"] = False
+
+    if keep["manifest_prefetch_disabled_by_dashboard"]:
+        config["manifest_prefetch_enabled"] = False
+
+    if keep["video_passthrough_disabled_by_dashboard"]:
+        config["video_passthrough_enabled"] = False
 
     if key != "download" and keep["telegram_mode_enabled"]:
         config["telegram_mode_enabled"] = True

@@ -3127,7 +3127,7 @@ class ProxyServer:
             "chunked_download_max_parallel": getattr(self, "_download_max_parallel", 0),
             "chunked_download_max_chunks": getattr(self, "_download_max_chunks", 0),
             "chunked_download_any_extension": bool(getattr(self, "_download_any_extension", False)),
-            "chunked_download_extensions": list(getattr(self, "_download_extensions", [])),
+            "chunked_download_extensions": ["*"] if bool(getattr(self, "_download_any_extension", False)) else list(getattr(self, "_download_extensions", [])),
 
             "video_prefetch_enabled": bool(getattr(self, "_video_prefetch_enabled", False)),
             "video_prefetch_next_ranges": getattr(self, "_video_prefetch_count", 0),
@@ -3382,14 +3382,17 @@ class ProxyServer:
         # but avoid treating normal HTML/API/navigation/static browser traffic
         # as a large file download.
         if self._download_any_extension:
-            browser_doc_or_api = (
-                "text/html" in accept
-                or "application/json" in accept
+            # DOWNLOAD_MODE_ANY_EXTENSION_FIX
+            # Download mode intentionally treats unknown navigations as downloads.
+            # Browser downloads may send Accept: text/html, especially PHP download
+            # endpoints like /remote_control.php, so do not exclude text/html here.
+            browser_subresource_or_api = (
+                "application/json" in accept
                 or "text/css" in accept
                 or "javascript" in accept
                 or sec_dest in {"script", "style", "font", "image"}
             )
-            if browser_doc_or_api:
+            if browser_subresource_or_api:
                 return False
             return True
 
