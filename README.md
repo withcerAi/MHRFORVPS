@@ -4,7 +4,7 @@ This project is based on [MasterHttpRelayVPN](https://github.com/masterking32/Ma
 
 <p align="center">
   <img
-    src="https://github.com/user-attachments/assets/5ac60b07-2c70-492d-8aa0-399dd7213a08"
+    src="https://i.postimg.cc/wBr2hLdm/Dashboard.jpg"
     alt="MHR Dashboard"
     width="100%"
   />
