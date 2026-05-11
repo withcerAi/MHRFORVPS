@@ -529,6 +529,97 @@ button:disabled{opacity:.45;cursor:not-allowed}
   color:#a5f3fc;
   font-family:var(--mono);
 }
+
+.tierGuideHero{
+  position:relative;
+  overflow:hidden;
+  border:1px solid #ffffff18;
+  border-radius:22px;
+  padding:18px;
+  background:
+    radial-gradient(circle at 15% 10%,#22d3ee28,transparent 34%),
+    radial-gradient(circle at 85% 0%,#a78bfa2d,transparent 36%),
+    linear-gradient(135deg,#020617cc,#0f172acc);
+}
+.tierGuideHero:before{
+  content:"";
+  position:absolute;
+  inset:-1px;
+  pointer-events:none;
+  background:linear-gradient(135deg,#22d3ee22,transparent 35%,#a78bfa24);
+}
+.tierGuideHero > *{position:relative}
+.tierBadge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  border:1px solid #ffffff20;
+  background:#020617b8;
+  color:#cffafe;
+  border-radius:999px;
+  padding:7px 11px;
+  font-weight:950;
+  font-size:12px;
+  margin-bottom:10px;
+}
+.tierCards{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:12px;
+  margin-top:14px;
+}
+.tierCard{
+  border:1px solid #ffffff16;
+  background:linear-gradient(180deg,#020617b8,#0b1220d9);
+  border-radius:20px;
+  padding:14px;
+  min-height:170px;
+  box-shadow:0 18px 42px #0005;
+}
+.tierCard strong{
+  display:block;
+  font-size:17px;
+  margin-bottom:8px;
+}
+.tierCard .tierNum{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:46px;
+  height:34px;
+  padding:0 10px;
+  border-radius:999px;
+  background:linear-gradient(135deg,#2563eb,#7c3aed);
+  color:white;
+  font-family:var(--mono);
+  font-weight:950;
+  margin-bottom:12px;
+}
+.tierCard .netType{
+  color:#dbeafe;
+  font-weight:900;
+  line-height:1.7;
+}
+.tierCard .desc{
+  color:var(--muted);
+  font-size:13px;
+  line-height:1.75;
+  margin-top:8px;
+}
+.tierNote{
+  margin-top:14px;
+  border:1px solid #164e63;
+  background:#082f4999;
+  color:#cffafe;
+  border-radius:18px;
+  padding:13px;
+  line-height:1.75;
+}
+html[lang="en"] .tierCards{text-align:left}
+html[lang="fa"] .tierCards{text-align:right}
+@media(max-width:860px){
+  .tierCards{grid-template-columns:1fr}
+}
 @media(max-width:760px){
   main{padding:10px}
   .grid{grid-template-columns:1fr}
@@ -605,6 +696,49 @@ button:disabled{opacity:.45;cursor:not-allowed}
     </div>
   </div>
 
+  <div class="card step" id="stepInternet">
+    <h2 data-i18n="internetTitle">پیشنهاد Tier بر اساس نوع اینترنت</h2>
+
+    <div class="tierGuideHero">
+      <div class="tierBadge" data-i18n="internetBadge">راهنمای انتخاب Script Optimizer</div>
+      <p class="muted" data-i18n="internetIntro">
+        بعد از نصب، از داخل Dashboard بخش Script Optimizer می‌توانی Tier را تنظیم کنی. این انتخاب تعداد Script ID ها را حذف نمی‌کند؛ فقط سطح فشار و موازی‌سازی را با کیفیت اینترنتت هماهنگ می‌کند.
+      </p>
+
+      <div class="tierCards">
+        <div class="tierCard">
+          <div class="tierNum">Tier 1-2</div>
+          <strong data-i18n="tierSlowTitle">اینترنت ADSL / خط ضعیف</strong>
+          <div class="netType" data-i18n="tierSlowNet">پیشنهادی برای اتصال‌های ناپایدار یا پینگ بالا</div>
+          <div class="desc" data-i18n="tierSlowDesc">فشار کمتر روی H2 و Apps Script، احتمال خطا و 503 کمتر، مناسب وقتی سرعت خام زیاد نیست.</div>
+        </div>
+
+        <div class="tierCard">
+          <div class="tierNum">Tier 3-4</div>
+          <strong data-i18n="tierMidTitle">VDSL / 4G</strong>
+          <div class="netType" data-i18n="tierMidNet">تعادل بین سرعت و پایداری</div>
+          <div class="desc" data-i18n="tierMidDesc">برای اکثر کاربران بهترین نقطه شروع است؛ موازی‌سازی بیشتر می‌شود ولی هنوز فشار کنترل‌شده می‌ماند.</div>
+        </div>
+
+        <div class="tierCard">
+          <div class="tierNum">Tier 5</div>
+          <strong data-i18n="tierFastTitle">فیبر / 5G قوی</strong>
+          <div class="netType" data-i18n="tierFastNet">برای اینترنت سریع و پایدار</div>
+          <div class="desc" data-i18n="tierFastDesc">بیشترین توان موازی‌سازی را فعال می‌کند. وقتی ۵ یا بیشتر Script ID داری و اینترنتت کشش دارد مناسب‌تر است.</div>
+        </div>
+      </div>
+
+      <div class="tierNote" data-i18n="internetNote">
+        پیشنهاد عملی: اگر مطمئن نیستی، بعد از نصب از Tier 2 یا Tier 3 شروع کن؛ اگر در لاگ‌ها Timeout / 503 زیاد دیدی Tier را کمتر کن، اگر پایدار بود بالاتر ببر.
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="secondary" id="backInternet" data-i18n="back">قبلی</button>
+      <button type="button" id="nextInternet" data-i18n="next">بعدی</button>
+    </div>
+  </div>
+
   <div class="card step" id="stepExit">
     <h2 data-i18n="exitTitle">Exit Node / Server Health</h2>
     <p class="muted" data-i18n="exitHelp">این بخش اختیاری است، ولی اگر VPS/Exit Node داری به تحلیل سلامت سرور و فشار اتصال کمک می‌کند.</p>
@@ -663,6 +797,19 @@ var T = {
     singleIdOnly:"Enter only one clean Deployment ID. Spaces, comma, newline, brackets and quotes are not allowed.",
     configPreview:"Preview inside config.json",
     scriptHelp:"Enter one Deployment ID at a time. Spaces, comma, newline, brackets and quotes are not allowed.",
+    internetTitle:"Recommended Tier by internet type",
+    internetBadge:"Script Optimizer guide",
+    internetIntro:"After setup, you can change Tier from Dashboard → Script Optimizer. This does not remove your Script IDs; it only adjusts pressure and parallelism for your internet quality.",
+    tierSlowTitle:"ADSL / weak line",
+    tierSlowNet:"Recommended for unstable connections or high ping",
+    tierSlowDesc:"Lower pressure on H2 and Apps Script, fewer 503/timeout bursts, better when raw speed is limited.",
+    tierMidTitle:"VDSL / 4G",
+    tierMidNet:"Balanced speed and stability",
+    tierMidDesc:"Usually the best starting point for most users; more parallelism while keeping pressure controlled.",
+    tierFastTitle:"Fiber / strong 5G",
+    tierFastNet:"For fast and stable internet",
+    tierFastDesc:"Enables the highest parallelism. Best when you have 5+ Script IDs and your connection can handle it.",
+    internetNote:"Practical suggestion: if you are not sure, start with Tier 2 or Tier 3 after setup. If you see many Timeout / 503 logs, lower the Tier; if stable, raise it.",
     exitTitle:"Exit Node / Server Health",
     exitHelp:"Optional. If you have a VPS/Exit Node, it helps Dashboard analyze server health and connection pressure.",
     exitUrl:"Exit Node health URL",
@@ -698,6 +845,19 @@ var T = {
     singleIdOnly:"هر بار فقط یک Deployment ID تمیز وارد کن. فاصله، comma، خط جدید، bracket و quote مجاز نیست.",
     configPreview:"پیش‌نمایش داخل config.json",
     scriptHelp:"هر بار فقط یک Deployment ID وارد کن. فاصله، comma، خط جدید، bracket و quote مجاز نیست.",
+    internetTitle:"پیشنهاد Tier بر اساس نوع اینترنت",
+    internetBadge:"راهنمای انتخاب Script Optimizer",
+    internetIntro:"بعد از نصب، از داخل Dashboard بخش Script Optimizer می‌توانی Tier را تنظیم کنی. این انتخاب تعداد Script ID ها را حذف نمی‌کند؛ فقط سطح فشار و موازی‌سازی را با کیفیت اینترنتت هماهنگ می‌کند.",
+    tierSlowTitle:"اینترنت ADSL / خط ضعیف",
+    tierSlowNet:"پیشنهادی برای اتصال‌های ناپایدار یا پینگ بالا",
+    tierSlowDesc:"فشار کمتر روی H2 و Apps Script، احتمال خطا و 503 کمتر، مناسب وقتی سرعت خام زیاد نیست.",
+    tierMidTitle:"VDSL / 4G",
+    tierMidNet:"تعادل بین سرعت و پایداری",
+    tierMidDesc:"برای اکثر کاربران بهترین نقطه شروع است؛ موازی‌سازی بیشتر می‌شود ولی هنوز فشار کنترل‌شده می‌ماند.",
+    tierFastTitle:"فیبر / 5G قوی",
+    tierFastNet:"برای اینترنت سریع و پایدار",
+    tierFastDesc:"بیشترین توان موازی‌سازی را فعال می‌کند. وقتی ۵ یا بیشتر Script ID داری و اینترنتت کشش دارد مناسب‌تر است.",
+    internetNote:"پیشنهاد عملی: اگر مطمئن نیستی، بعد از نصب از Tier 2 یا Tier 3 شروع کن؛ اگر در لاگ‌ها Timeout / 503 زیاد دیدی Tier را کمتر کن، اگر پایدار بود بالاتر ببر.",
     exitTitle:"Exit Node / Server Health",
     exitHelp:"این بخش اختیاری است، ولی اگر VPS/Exit Node داری به تحلیل سلامت سرور و فشار اتصال کمک می‌کند.",
     exitUrl:"آدرس Health نود خروجی",
@@ -718,7 +878,7 @@ var T = {
 };
 
 var currentStep = 0;
-var steps = ["stepLang", "stepScript", "stepExit", "stepReview"];
+var steps = ["stepLang", "stepScript", "stepInternet", "stepExit", "stepReview"];
 var SCRIPT_IDS = [];
 
 function gid(id){
@@ -1048,6 +1208,9 @@ function bindEvents(){
 
   gid("back1").addEventListener("click", prevStep);
   gid("next1").addEventListener("click", nextStep);
+
+  gid("backInternet").addEventListener("click", prevStep);
+  gid("nextInternet").addEventListener("click", nextStep);
 
   gid("back2").addEventListener("click", prevStep);
   gid("next2").addEventListener("click", nextStep);

@@ -113,7 +113,7 @@ OPTIMIZER_MANAGED_KEYS = (
     "video_passthrough_enabled", "video_passthrough_relay_timeout",
     "video_priority_retry_attempts", "video_priority_retry_delay_ms", "video_priority_parallel_relay",
     "youtube_sabr_booster_enabled", "youtube_sabr_timeout", "youtube_sabr_max_parallel",
-    "youtube_sabr_retry_attempts", "youtube_sabr_retry_delay_ms",
+    "youtube_sabr_retry_attempts", "youtube_sabr_retry_delay_ms", "youtube_sabr_queue_wait_seconds",
     "turbo_mode_enabled", "turbo_parallel_relay", "turbo_force_no_delay", "turbo_skip_download_mode",
     "telegram_mode_enabled", "telegram_parallel_relay",
 )
@@ -274,6 +274,12 @@ class DashboardLogHandler(logging.Handler):
             ):
                 return
 
+            intentional_sabr_drop = (
+                "x-mhr-intentional-drop: sabr_queue" in low
+                or "sabr queue drop" in low
+                or "ignored-as-error" in low
+            )
+
             if "generate_204" in low or "/s/search/audio/" in low or "manifest.webmanifest" in low:
                 return
 
@@ -361,7 +367,7 @@ class DashboardLogHandler(logging.Handler):
                 "http/2 multiplexing available",
             ))
 
-            is_error = (not is_noise_error_line) and (
+            is_error = (not intentional_sabr_drop) and (not is_noise_error_line) and (
                 record.levelno >= logging.ERROR
                 or "[error]" in low
                 or " error " in low
@@ -388,7 +394,7 @@ class DashboardLogHandler(logging.Handler):
             )
 
             is_script_error = is_script_error_log_line(msg)
-            is_full_error = is_full_error_log_line(msg, record.levelno) or is_error
+            is_full_error = (not intentional_sabr_drop) and (is_full_error_log_line(msg, record.levelno) or is_error)
 
             # All / Live is a complete live stream.
             live_logs.append(msg)
@@ -398,7 +404,7 @@ class DashboardLogHandler(logging.Handler):
                 error_logs.append(msg)
 
             is_script_error = is_script_error_log_line(msg)
-            is_full_error = is_full_error_log_line(msg, record.levelno) or is_error
+            is_full_error = (not intentional_sabr_drop) and (is_full_error_log_line(msg, record.levelno) or is_error)
 
             # Script Errors: only Apps Script / Script ID health problems.
             if is_script_error:
@@ -891,6 +897,12 @@ def is_sabr_success(text):
 
 def is_sabr_failure(text):
     t = str(text or "").lower()
+    if (
+        "x-mhr-intentional-drop: sabr_queue" in t
+        or "sabr queue drop" in t
+        or "ignored-as-error" in t
+    ):
+        return False
     return any(x in t for x in ("sabr boost failed", "sabr boost error", "error", "failed", "timeout", " 403 ", " 429 ", " 500 ", " 502 ", " 503 ", " 504 ", "status=4", "status=5", "relay error"))
 
 
@@ -1196,6 +1208,7 @@ def build_dashboard_config(config, effective):
         "youtube_sabr_max_parallel": effective.get("youtube_sabr_max_parallel", config.get("youtube_sabr_max_parallel", 2)),
         "youtube_sabr_retry_attempts": effective.get("youtube_sabr_retry_attempts", config.get("youtube_sabr_retry_attempts", 2)),
         "youtube_sabr_retry_delay_ms": effective.get("youtube_sabr_retry_delay_ms", config.get("youtube_sabr_retry_delay_ms", 120)),
+        "youtube_sabr_queue_wait_seconds": effective.get("youtube_sabr_queue_wait_seconds", config.get("youtube_sabr_queue_wait_seconds", 6)),
         "telegram_mode_enabled": effective.get("telegram_mode_enabled", config.get("telegram_mode_enabled", False)),
         "telegram_parallel_relay": effective.get("telegram_parallel_relay", config.get("telegram_parallel_relay", "-")),
         "turbo_mode_enabled": effective.get("turbo_mode_enabled", config.get("turbo_mode_enabled", False)),
@@ -1234,6 +1247,7 @@ def build_dashboard_config(config, effective):
         "script_quota_limit", "verify_ssl", "lan_sharing", "max_response_body_bytes", "chunked_download_min_size",
         "chunked_download_max_chunks", "block_hosts", "bypass_hosts", "direct_google_exclude", "direct_google_allow",
         "hosts", "video_priority_retry_attempts", "video_priority_retry_delay_ms", "video_priority_parallel_relay",
+        "youtube_sabr_queue_wait_seconds",
         "turbo_small_request_max", "turbo_chunk_size", "turbo_parallel", "turbo_min_size",
         "telegram_cache_ttl_seconds", "telegram_hosts", "telegram_serial_per_host", "telegram_coalesce_window_ms",
         "telegram_max_delay_ms", "telegram_burst_limit", "telegram_burst_cooldown_ms", "telegram_cidrs",
@@ -1768,6 +1782,7 @@ def apply_runtime_profile(config, mode):
         "telegram_mode_enabled": bool(config.get("telegram_mode_enabled", False)),
         "turbo_mode_enabled": bool(config.get("turbo_mode_enabled", False)),
         "youtube_sabr_booster_enabled": bool(config.get("youtube_sabr_booster_enabled", True)),
+        "youtube_sabr_queue_wait_seconds": config.get("youtube_sabr_queue_wait_seconds", None),
         "sabr_disabled_by_dashboard": bool(config.get("sabr_disabled_by_dashboard", False)),
         "turbo_disabled_by_dashboard": bool(config.get("turbo_disabled_by_dashboard", False)),
         "h2_disabled_by_dashboard": bool(config.get("h2_disabled_by_dashboard", False)),
@@ -1808,6 +1823,8 @@ def apply_runtime_profile(config, mode):
     config["turbo_mode_enabled"] = False if keep["turbo_disabled_by_dashboard"] else keep["turbo_mode_enabled"]
     config["sabr_disabled_by_dashboard"] = keep["sabr_disabled_by_dashboard"]
     config["youtube_sabr_booster_enabled"] = False if keep["sabr_disabled_by_dashboard"] else keep["youtube_sabr_booster_enabled"]
+    if keep.get("youtube_sabr_queue_wait_seconds") is not None:
+        config["youtube_sabr_queue_wait_seconds"] = keep["youtube_sabr_queue_wait_seconds"]
 
     config["h2_disabled_by_dashboard"] = keep["h2_disabled_by_dashboard"]
     config["_h2_connections_before_dashboard_off"] = profile_h2

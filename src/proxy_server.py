@@ -742,6 +742,15 @@ class ProxyServer:
         status, headers, body = self.fronter._split_raw_response(response)
         host = (urlparse(url).hostname or "").lower()
 
+        if self._is_intentional_sabr_drop_response(response):
+            log.info(
+                "SABR QUEUE DROP summary ignored-as-error host=%s status=%s url=%s",
+                host or "-",
+                status,
+                _safe_log_url(url, 130),
+            )
+            return
+
         if status >= 300 or self._should_trace_host(host):
             location = headers.get("location", "") or "-"
             server = headers.get("server", "") or "-"
@@ -2593,14 +2602,60 @@ class ProxyServer:
             and ("sabr=1" in u or "rqh=1" in u)
         )
 
+
     async def _relay_youtube_sabr_boosted(self, method, url, headers, body):
-        attempts = max(1, int(getattr(self, "_youtube_sabr_retry_attempts", 2) or 2))
-        delay_ms = max(0, int(getattr(self, "_youtube_sabr_retry_delay_ms", 120) or 0))
+        """
+        YouTube SABR booster with bounded queue wait.
+
+        Shorts can preload multiple SABR/videoplayback POST requests. If the
+        relay path stalls, old requests may occupy all SABR slots. In that case
+        we intentionally return a short 503 with X-MHR-Intentional-Drop so the
+        player can retry instead of waiting behind stale work.
+        """
+        attempts = max(1, int(getattr(self, "_youtube_sabr_retry_attempts", 1) or 1))
+        delay_ms = max(0, int(getattr(self, "_youtube_sabr_retry_delay_ms", 0) or 0))
+
+        queue_wait = 3.0
+        try:
+            queue_wait = float(
+                (getattr(self, "_runtime_config_ref", {}) or {}).get(
+                    "youtube_sabr_queue_wait_seconds",
+                    queue_wait,
+                )
+            )
+        except Exception:
+            queue_wait = 3.0
+        queue_wait = max(0.2, min(queue_wait, 10.0))
 
         last_response = b""
         last_exc = None
+        acquired = False
 
-        async with self._youtube_sabr_sem:
+        try:
+            try:
+                await asyncio.wait_for(self._youtube_sabr_sem.acquire(), timeout=queue_wait)
+                acquired = True
+            except asyncio.TimeoutError:
+                log.info(
+                    "SABR QUEUE DROP -> stale request released queue_wait=%.1fs url=%s",
+                    queue_wait,
+                    _safe_log_url(url, 140),
+                )
+
+                body_bytes = b"YouTube SABR queue busy; retry requested"
+                header_bytes = "\r\n".join([
+                    "HTTP/1.1 503 Service Unavailable",
+                    "Content-Type: text/plain",
+                    "Connection: close",
+                    "X-MHR-Intentional-Drop: sabr_queue",
+                    "Cache-Control: no-store",
+                    f"Content-Length: {len(body_bytes)}",
+                    "",
+                    "",
+                ]).encode("ascii")
+
+                return header_bytes + body_bytes
+
             for attempt in range(1, attempts + 1):
                 try:
                     log.info(
@@ -2616,7 +2671,7 @@ class ProxyServer:
                         url,
                         self._video_passthrough_headers(headers),
                         body or b"",
-                        timeout_override=float(getattr(self, "_youtube_sabr_timeout", 180.0)),
+                        timeout_override=float(getattr(self, "_youtube_sabr_timeout", 30.0)),
                         parallel_override=int(getattr(self, "_youtube_sabr_max_parallel", 2) or 2),
                     )
 
@@ -2624,15 +2679,15 @@ class ProxyServer:
                     status = self._raw_response_status(last_response)
 
                     if status and status not in (429, 500, 502, 503, 504):
-                        log.info("SABR BOOST OK -> status=%s url=%s", status, _safe_log_url(url, 130))
+                        log.info(
+                            "SABR BOOST OK -> status=%s url=%s",
+                            status,
+                            _safe_log_url(url, 130),
+                        )
                         return last_response
 
-                    if last_response and status in (200, 204, 206):
-                        log.info("SABR BOOST OK -> status=%s url=%s", status, _safe_log_url(url, 130))
-                        return last_response
-
-                    log.warning(
-                        "SABR BOOST bad status=%s attempt=%s/%s url=%s",
+                    log.info(
+                        "SABR BOOST retryable status=%s attempt=%s/%s url=%s",
                         status,
                         attempt,
                         attempts,
@@ -2641,27 +2696,42 @@ class ProxyServer:
 
                 except Exception as exc:
                     last_exc = exc
-                    log.warning(
-                        "SABR BOOST exception attempt=%s/%s error=%s url=%s",
+                    log.info(
+                        "SABR BOOST soft exception attempt=%s/%s kind=%s url=%s",
                         attempt,
                         attempts,
-                        exc,
+                        type(exc).__name__,
                         _safe_log_url(url, 140),
                     )
 
                 if attempt < attempts and delay_ms > 0:
                     await asyncio.sleep(delay_ms / 1000.0)
 
-        if last_response:
-            return last_response
+            if last_response:
+                return last_response
 
-        err = f"YouTube SABR booster failed: {last_exc}".encode()
-        return (
-                    b"HTTP/1.1 502 Bad Gateway\r\n"
-                    b"Content-Type: text/plain\r\n"
-                    b"Content-Length: " + str(len(err)).encode() + b"\r\n"
-                    b"\r\n" + err
-                )
+            err = (
+                "YouTube SABR booster unavailable: "
+                f"{type(last_exc).__name__ if last_exc else 'empty_response'}"
+            ).encode()
+
+            header_bytes = "\r\n".join([
+                "HTTP/1.1 502 Bad Gateway",
+                "Content-Type: text/plain",
+                "Connection: close",
+                f"Content-Length: {len(err)}",
+                "",
+                "",
+            ]).encode("ascii")
+
+            return header_bytes + err
+
+        finally:
+            if acquired:
+                try:
+                    self._youtube_sabr_sem.release()
+                except Exception:
+                    pass
 
     # --- YOUTUBE_SABR_BOOSTER_METHODS_END ---
 
@@ -2766,6 +2836,22 @@ class ProxyServer:
             out[k] = v
         return out
 
+
+    @staticmethod
+    def _is_intentional_sabr_drop_response(response: bytes | None) -> bool:
+        """True when we intentionally dropped a stale SABR request.
+
+        This is not a runtime/network error. It is a Shorts backpressure signal
+        that tells the player to retry instead of waiting behind an old request.
+        """
+        if not response:
+            return False
+        try:
+            header = response.split(b"\r\n\r\n", 1)[0].lower()
+            return b"x-mhr-intentional-drop: sabr_queue" in header
+        except Exception:
+            return False
+
     async def _maybe_video_passthrough(self, method: str, url: str, headers: dict | None, body: bytes, writer, origin: str = "") -> bool:
         if not self._is_video_passthrough_candidate(method, url, headers, body):
             return False
@@ -2824,7 +2910,14 @@ class ProxyServer:
             if origin and response:
                 response = self._inject_cors_headers(response, origin)
 
-            self._log_response_summary(url, response)
+            if self._is_intentional_sabr_drop_response(response):
+                log.info(
+                    "SABR QUEUE DROP delivered to player; retry expected host=%s url=%s",
+                    host,
+                    _safe_log_url(url, 130),
+                )
+            else:
+                self._log_response_summary(url, response)
 
             writer.write(response)
             await writer.drain()
@@ -3620,3 +3713,5 @@ class ProxyServer:
         # --- VIDEO_PREFETCH_SCHEDULE_HTTP_START ---
         self._schedule_video_prefetch(method, url, headers, response)
         # --- VIDEO_PREFETCH_SCHEDULE_HTTP_END ---
+
+# PATCH_SABR_QUEUE_FAST_FAIL_V1
