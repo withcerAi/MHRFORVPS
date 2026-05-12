@@ -69,6 +69,19 @@ def fmt_seconds(sec):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _exc_detail(exc):
+    """Verbose exception text for downloader logs."""
+    try:
+        return f"{type(exc).__name__}: {repr(exc)}"
+    except Exception:
+        return str(exc) or "unknown error"
+
+
+def _short_url(url, n=220):
+    url = str(url or "")
+    return url if len(url) <= n else url[:n] + "...(truncated)"
+
+
 # PATCH_DOWNLOADER_FEATURES_CORE_START
 def parse_schedule_ts(value):
     """
@@ -124,6 +137,12 @@ class DownloadJob:
         self.pause_event.set()
         self.cancelled = False
         self.speed_meter = SpeedMeter()
+
+        # Fallback for origins/Apps Script paths that ignore Range and return
+        # the full file as HTTP 200. In that case downloader stores the body
+        # as a single chunk instead of failing before download starts.
+        self._single_response_body = None
+        self._single_response_headers = {}
 
         # PATCH_DOWNLOADER_FEATURES_JOB_INIT_START
         self.created_at = time.time()
@@ -310,7 +329,7 @@ class DownloadJob:
             if hasattr(fronter, "_warm_pool"):
                 await fronter._warm_pool()
         except Exception as exc:
-            self.state.log("WARN", f"H2 warm skipped: {exc}")
+            self.state.log("WARN", f"H2 warm skipped: {_exc_detail(exc)}")
 
         deadline = time.time() + max(0.2, wait_s)
         while time.time() < deadline:
@@ -373,19 +392,44 @@ class DownloadJob:
         self.state.quota_used += 1
         self.state.relay_sent_bytes += sent_guess
 
+        route = "H2-preferred" if self.h2_enabled() else "H1-forced"
+        range_header = ""
+        try:
+            range_header = str((headers or {}).get("Range") or (headers or {}).get("range") or "")
+        except Exception:
+            range_header = ""
+
+        self.state.log(
+            "INFO",
+            f"Relay request route={route} method={method} range={range_header or '-'} url={_short_url(url)}"
+        )
+
         t0 = time.perf_counter()
         try:
             raw = await self._relay_h2_preferred(fronter, method, url, headers, body)
             self.state.relay_received_bytes += len(raw or b"")
+            status, resp_headers, resp_body = parse_raw_response(raw or b"")
+            self.state.log(
+                "INFO",
+                f"Relay response route={route} method={method} status={status} "
+                f"rx={len(raw or b'')} body={len(resp_body or b'')} "
+                f"content-type={resp_headers.get('content-type', '-')} "
+                f"content-length={resp_headers.get('content-length', '-')} "
+                f"content-range={resp_headers.get('content-range', '-')}"
+            )
             return raw
         except Exception as exc:
             self.state.relay_errors += 1
-            self.state.log("ERROR", f"Relay failed: {exc}")
+            self.state.log(
+                "ERROR",
+                f"Relay failed route={route} method={method} range={range_header or '-'} "
+                f"url={_short_url(url)} error={_exc_detail(exc)}"
+            )
             raise
         finally:
             dt = (time.perf_counter() - t0) * 1000
             if dt > 5000:
-                self.state.log("WARN", f"Slow relay request: {dt:.0f}ms")
+                self.state.log("WARN", f"Slow relay request route={route} method={method}: {dt:.0f}ms")
             self.state.save()
 
 
@@ -452,7 +496,18 @@ class DownloadJob:
     # PATCH_DOWNLOADER_FEATURES_JOB_METHODS_END
 
     async def start(self):
-        fronter = DomainFronter(self.config)
+        fronter_config = dict(self.config)
+
+        if not self.h2_enabled():
+            fronter_config["gas_downloader_force_h1"] = True
+
+        fronter = DomainFronter(fronter_config)
+
+        if not self.h2_enabled():
+            self.state.log("INFO", "Downloader relay route: H1 forced because downloader_h2_enabled is OFF")
+        else:
+            self.state.log("INFO", "Downloader relay route: H2 preferred because downloader_h2_enabled is ON")
+        self.state.save()
         self.state.started_at = time.time()
         self.state.status = "starting"
         self.state.log("INFO", "Download started")
@@ -466,7 +521,7 @@ class DownloadJob:
             try:
                 await self._probe(fronter)
             except Exception as first_exc:
-                self.state.log("WARN", f"Direct probe failed, trying final URL resolver: {first_exc}")
+                self.state.log("WARN", f"Direct probe failed, trying final URL resolver: {_exc_detail(first_exc)}")
                 old_url = self.state.url
                 resolved = await self._resolve_final_url(fronter)
 
@@ -539,8 +594,8 @@ class DownloadJob:
         except Exception as e:
             if not self.cancelled:
                 self.state.status = "error"
-                self.state.error = str(e)
-                self.state.log("ERROR", str(e))
+                self.state.error = _exc_detail(e)
+                self.state.log("ERROR", _exc_detail(e))
                 self.state.save()
         finally:
             try:
@@ -625,7 +680,7 @@ class DownloadJob:
             return False
 
         except Exception as exc:
-            self.state.log("WARN", f"Final URL resolve failed: {exc}")
+            self.state.log("WARN", f"Final URL resolve failed: {_exc_detail(exc)}")
             self.state.save()
             return False
 
@@ -668,7 +723,7 @@ class DownloadJob:
                 if hint:
                     self.state.log("WARN", f"HEAD probe HTTP {status}: {hint}")
         except Exception as exc:
-            self.state.log("WARN", f"HEAD probe failed: {exc}")
+            self.state.log("WARN", f"HEAD probe failed: {_exc_detail(exc)}")
 
         headers = self._request_headers("bytes=0-0")
         raw = await self.relay_counted(fronter, "GET", self.state.url, headers, b"")
@@ -687,14 +742,44 @@ class DownloadJob:
             if hint:
                 raise RuntimeError(f"Range probe returned HTML/block page: {hint}")
 
+            ct = str(resp_headers.get("content-type", "")).lower()
             cl = resp_headers.get("content-length")
-            if not cl:
-                raise RuntimeError("Server returned 200 without Content-Length; cannot safely chunk")
+            body_len = len(body or b"")
 
-            raise RuntimeError(
-                "Server ignored Range request and returned HTTP 200. "
-                "Use Browser Downloader mode for this link, or provide valid Cookie/Referer headers."
+            if body_len <= 0:
+                raise RuntimeError(
+                    "Server ignored Range request and returned HTTP 200 with empty body; cannot download safely"
+                )
+
+            if "text/html" in ct:
+                raise RuntimeError(
+                    "Server ignored Range request and returned HTML instead of file; Cookie/Referer may be required"
+                )
+
+            total = body_len
+            try:
+                if cl and int(cl) > 0:
+                    total = int(cl)
+            except Exception:
+                total = body_len
+
+            if total != body_len:
+                self.state.log(
+                    "WARN",
+                    f"Range ignored with HTTP 200 but Content-Length/body mismatch {total}/{body_len}; using body size"
+                )
+                total = body_len
+
+            self.state.total_size = total
+            self._single_response_body = body
+            self._single_response_headers = dict(resp_headers or {})
+            self.state.chunks = [ChunkState(index=0, start=0, end=total - 1)]
+            self.state.log(
+                "WARN",
+                f"Range support: OFF. Server returned full file via HTTP 200; using single-shot fallback ({total} bytes, type={ct or '-'})"
             )
+            self.state.save()
+            return
         else:
             hint = self._response_hint(status, resp_headers, body)
             if hint:
@@ -725,6 +810,28 @@ class DownloadJob:
 
     async def _download_chunk(self, fronter, chunk):
         if chunk.done:
+            return
+
+        if (
+            chunk.index == 0
+            and self._single_response_body is not None
+            and len(self.state.chunks) == 1
+        ):
+            body = self._single_response_body or b""
+            expected = chunk.end - chunk.start + 1
+            if len(body) != expected:
+                raise RuntimeError(f"single-shot fallback size mismatch {len(body)}/{expected}")
+
+            with open(self.state.part_path, "r+b") as f:
+                f.seek(0)
+                f.write(body)
+
+            chunk.done = True
+            chunk.bytes = expected
+            chunk.error = ""
+            self.state.downloaded = expected
+            self.state.log("INFO", f"Single-shot fallback wrote {expected} bytes")
+            self.state.save()
             return
 
         for attempt in range(self.retries):
@@ -767,10 +874,10 @@ class DownloadJob:
 
             except Exception as e:
                 chunk.retries += 1
-                chunk.error = str(e)
+                chunk.error = _exc_detail(e)
                 self.state.relay_errors += 1
-                self.state.error = str(e)
-                self.state.log("ERROR", f"Chunk {chunk.index} retry {attempt + 1}/{self.retries}: {e}")
+                self.state.error = _exc_detail(e)
+                self.state.log("ERROR", f"Chunk {chunk.index} retry {attempt + 1}/{self.retries}: {_exc_detail(e)}")
                 self.state.save()
                 await asyncio.sleep(0.7 * (attempt + 1))
 

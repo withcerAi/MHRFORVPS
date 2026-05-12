@@ -63,6 +63,18 @@ def _mask_sid(sid: str) -> str:
     return f"{sid[:6]}…{sid[-4:]}"
 
 
+def _exc_detail(exc) -> str:
+    try:
+        return f"{type(exc).__name__}: {repr(exc)}"
+    except Exception:
+        return str(exc) or "unknown error"
+
+
+def _short_url(url, n=180) -> str:
+    url = str(url or "")
+    return url if len(url) <= n else url[:n] + "...(truncated)"
+
+
 @dataclass
 class HostStat:
     """Per-host traffic accounting — useful for profiling slow / heavy sites."""
@@ -297,9 +309,17 @@ class DomainFronter:
         self._h2 = None
         self._h2_pool = []
         self._h2_pool_idx = 0
+
+        # Downloader-only route override.
+        # This does NOT change global config.json H2 settings.
+        # gas_downloader.py can pass gas_downloader_force_h1=True so relay()
+        # uses only HTTP/1.1 for downloader jobs.
+        self._force_h1_for_downloader = bool(config.get("gas_downloader_force_h1", False))
+        self._relay_route_logged = False
+
         try:
             from h2_transport import H2Transport, H2_AVAILABLE
-            if H2_AVAILABLE:
+            if H2_AVAILABLE and not self._force_h1_for_downloader:
                 try:
                     n_conns = max(0, int(config.get("h2_connections", 3)))
                 except (TypeError, ValueError):
@@ -1448,7 +1468,7 @@ class DomainFronter:
                     self._h2_healer_last_attempt_at = time.time()
                 except Exception:
                     pass
-                log.warning("H2 healer loop error: %s", exc)
+                log.warning("H2 healer loop error: %s", _exc_detail(exc))
     # PATCH_H2_DELAYED_HEALER_END
 
     async def close(self):
@@ -1513,7 +1533,7 @@ class DomainFronter:
 
         except Exception as e:
             self._record_h2_failure(e)
-            log.warning("H2 connect failed (%s), using H1 pool fallback", e)
+            log.warning("H2 connect failed (%s), using H1 pool fallback", _exc_detail(e))
 
     async def _h2_connect_and_warm(self):
         """Connect H2, pre-warm the Apps Script container, start keepalive."""
@@ -1598,7 +1618,7 @@ class DomainFronter:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                log.debug("H2 pool healer error: %s", exc)
+                log.debug("H2 pool healer error: %s", _exc_detail(exc))
 
     async def _prewarm_script(self):
         """Pre-warm Apps Script and detect /dev fast path (no redirect)."""
@@ -1707,7 +1727,7 @@ class DomainFronter:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                log.debug("H1 container keepalive failed: %s", exc)
+                log.debug("H1 container keepalive failed: %s", _exc_detail(exc))
 
     async def _do_warm(self):
         """Open WARM_POOL_COUNT connections in parallel — failures are fine."""
@@ -1727,6 +1747,9 @@ class DomainFronter:
 
     async def apply_h2_connections(self, n_conns: int):
         """Rebuild H2 pool live when runtime mode changes."""
+        if bool(getattr(self, "_force_h1_for_downloader", False)):
+            log.info("Downloader forced H1 relay path active; ignoring H2 rebuild for this DomainFronter instance")
+            return
         try:
             n_conns = max(0, int(n_conns or 0))
         except Exception:
@@ -1783,7 +1806,7 @@ class DomainFronter:
             log.info("Runtime H2 pool rebuilt: %d connections", len(self._h2_pool))
 
         except Exception as exc:
-            log.warning("Runtime H2 rebuild failed: %s", exc)
+            log.warning("Runtime H2 rebuild failed: %s", _exc_detail(exc))
 
         finally:
             self._h2_rebuilding = False
@@ -1960,7 +1983,7 @@ class DomainFronter:
                 self._h2_healer_cooldown_seconds,
             )
         except Exception as exc:
-            log.warning("Fronter runtime apply failed: %s", exc)
+            log.warning("Fronter runtime apply failed: %s", _exc_detail(exc))
 
     async def relay(self, method: str, url: str,
                     headers: dict, body: bytes = b"") -> bytes:
@@ -1988,6 +2011,23 @@ class DomainFronter:
                 log.debug("Pool warm timeout — proceeding with cold pool")
 
         payload = self._build_payload(method, url, headers, body)
+
+        if bool(getattr(self, "_force_h1_for_downloader", False)):
+            if not bool(getattr(self, "_relay_route_logged", False)):
+                log.info("Downloader relay route: forced H1 only; H2/fanout/batch bypassed for gas_downloader")
+                self._relay_route_logged = True
+            t0 = time.perf_counter()
+            errored = False
+            result: bytes = b""
+            try:
+                result = await self._relay_payload_h1(payload)
+                return result
+            except Exception:
+                errored = True
+                raise
+            finally:
+                latency_ns = int((time.perf_counter() - t0) * 1e9)
+                self._record_site(url, len(result), latency_ns, errored)
 
         t0 = time.perf_counter()
         errored = False
@@ -2717,7 +2757,7 @@ class DomainFronter:
                 log.warning(
                     "Relay failure detail path=H2 fanout-fallback type=%s detail=%s url=%s",
                     type(e).__name__,
-                    str(e)[:220],
+                    _exc_detail(e)[:220],
                     self._host_key(payload.get("u")),
                 )
                 log.debug("Fan-out relay failed (%s), falling back", e)
@@ -2797,12 +2837,25 @@ class DomainFronter:
                             str(payload.get("u", ""))[:180],
                         )
                     if attempt < attempts - 1:
-                        log.debug("Relay attempt %d failed (%s: %s), retrying",
-                                  attempt + 1,
-                                  type(e).__name__, e)
+                        log.warning(
+                            "Relay retry via H1 attempt=%s/%s host=%s url=%s error=%s",
+                            attempt + 1,
+                            attempts,
+                            self._host_key(payload.get("u")),
+                            _short_url(payload.get("u")),
+                            _exc_detail(e),
+                        )
                         await self._video_retry_sleep(payload, attempt)
                         await self._flush_pool()
                     else:
+                        log.error(
+                            "Relay final failure via H1 attempt=%s/%s host=%s url=%s error=%s",
+                            attempt + 1,
+                            attempts,
+                            self._host_key(payload.get("u")),
+                            _short_url(payload.get("u")),
+                            _exc_detail(e),
+                        )
                         raise
 
     async def _relay_fanout(self, payload: dict) -> bytes:

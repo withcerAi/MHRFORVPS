@@ -138,11 +138,46 @@ html[lang="fa"] .label{letter-spacing:0}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0}
 .meta{color:var(--muted);font-size:13px;line-height:1.7;word-break:break-all}
 .logs{
-  height:230px;overflow-y:auto;overflow-x:hidden;background:#030712;border:1px solid #1f2937;
-  border-radius:16px;padding:10px;margin-top:12px;scroll-behavior:auto;direction:ltr;text-align:left
+  height:260px;
+  overflow-y:auto;
+  overflow-x:hidden;
+  background:#020617;
+  border:1px solid #1f2937;
+  border-radius:16px;
+  padding:10px;
+  margin-top:12px;
+  scroll-behavior:auto;
+  direction:ltr;
+  text-align:left;
+  overscroll-behavior:contain;
+  scrollbar-width:thin;
+  scrollbar-color:#334155 #020617;
 }
-.log{font-family:var(--font-mono);font-size:12px;border-bottom:1px solid #111827;padding:7px 2px;color:#cbd5e1;white-space:pre-wrap}
-.log.ERROR{color:#fecaca}.log.WARN{color:#fde68a}.log.DONE{color:#86efac}.log.INFO{color:#cbd5e1}
+.logs::-webkit-scrollbar{width:10px}
+.logs::-webkit-scrollbar-track{background:#020617;border-radius:999px}
+.logs::-webkit-scrollbar-thumb{background:#334155;border-radius:999px;border:2px solid #020617}
+.logs::-webkit-scrollbar-thumb:hover{background:#475569}
+.log{
+  font-family:var(--font-mono);
+  font-size:12px;
+  line-height:1.55;
+  border:1px solid #111827;
+  border-left:4px solid #334155;
+  background:#0b1220;
+  border-radius:10px;
+  padding:7px 9px;
+  margin:5px 0;
+  color:#cbd5e1;
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+.log.ERROR{color:#fecaca;border-left-color:#fb7185;background:#2a0b14}
+.log.WARN{color:#fde68a;border-left-color:#fbbf24;background:#251a05}
+.log.DONE{color:#86efac;border-left-color:#34d399;background:#052e1a}
+.log.INFO{color:#cbd5e1;border-left-color:#38bdf8;background:#071527}
+.logTime{color:#94a3b8}
+.logLevel{font-weight:950;margin:0 5px}
+.logMsg{color:inherit}
 .tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
 .empty{color:var(--muted);padding:25px;text-align:center;border:1px dashed #334155;border-radius:18px}
 .modal{display:none;position:fixed;inset:0;background:#000b;z-index:100;align-items:center;justify-content:center;padding:20px}
@@ -218,9 +253,9 @@ html[lang="en"] input{text-align:left}
     <div>
       <b><span data-i18n="h2_title">HTTP/2 Downloader Acceleration</span> <span style="color:#fbbf24" data-i18n="experimental">(Experimental)</span></b>
       <div class="hint" data-i18n="h2_help">
-        H1 / normal relay is more stable for large file downloads and is recommended for daily use.
-        H2 is experimental: it may improve some small or medium downloads, but large chunks can timeout or fall back to H1.
-        Turn H2 ON only for testing. If you see slow downloads, stream timeouts, or many retries, keep it OFF.
+        H2 can be faster on some links because it reuses multiplexed connections, especially for responsive CDNs or smaller chunks.
+        H1 is usually more predictable and is the safer fallback when H2 shows stream timeouts, reconnects, or repeated retries.
+        Try H2 for speed; switch it off if you see instability.
       </div>
     </div>
     <button id="h2Toggle" class="off" onclick="toggleH2()">H2: OFF</button>
@@ -298,7 +333,7 @@ const I18N = {
     queue_priority:"Queue priority",priority_help:"Higher number starts earlier. Use 0 for normal priority.",
     download:"Download",download_help:"Adds this link to the downloader queue.",
     h2_title:"HTTP/2 Downloader Acceleration",experimental:"(Experimental)",
-    h2_help:"H1 / normal relay is more stable for large file downloads and is recommended for daily use. H2 is experimental: it may improve some small or medium downloads, but large chunks can timeout or fall back to H1. Turn H2 ON only for testing. If you see slow downloads, stream timeouts, or many retries, keep it OFF.",
+    h2_help:"H2 can be faster on some links because it reuses multiplexed connections, especially for responsive CDNs or smaller chunks. H1 is usually more predictable and is the safer fallback when H2 shows stream timeouts, reconnects, or repeated retries. Try H2 for speed; switch it off if you see instability.",
     download_controls:"Download Controls",controls_help:"Queue and global downloader settings. These controls affect all downloads, not just one file.",
     resume_all:"Resume All",pause_all:"Pause All",save:"Save",
     max_active:"Max active downloads",max_active_help:"How many downloads can run at the same time. Example: 2 means two active downloads, the rest wait in queue.",
@@ -307,7 +342,7 @@ const I18N = {
     verify_size:"Verify final file size",verify_size_help:"After completion, downloader checks the final file size to detect broken or incomplete downloads.",
     active:"Active",done:"Done",total_speed:"Total Speed",quota_used:"Quota Used",
     downloads:"Downloads",no_downloads:"No downloads yet",
-    progress:"Progress",speed:"Speed",eta:"ETA",quota:"Quota",downloaded:"Downloaded",total:"Total",chunks:"Chunks",errors:"Errors",
+    progress:"Progress",speed:"Speed",eta:"ETA",finished_in:"Finished In",elapsed:"Elapsed",quota:"Quota",downloaded:"Downloaded",total:"Total",chunks:"Chunks",errors:"Errors",
     path:"Path",relay_requests:"Relay requests",relay_rx:"Relay RX",relay_tx:"Relay TX",chunk:"Chunk",parallel:"Parallel",
     priority:"Priority",scheduled:"Scheduled",limit:"Limit",unlimited:"Unlimited",error:"Error",
     pause:"Pause",resume:"Resume",cancel:"Cancel",play:"Play",open_folder:"Open Folder",remove:"Remove from List",delete_disk:"Delete from Disk",
@@ -326,7 +361,7 @@ const I18N = {
     queue_priority:"اولویت صف",priority_help:"عدد بالاتر زودتر شروع می‌شود. عدد ۰ یعنی اولویت عادی.",
     download:"دانلود",download_help:"این لینک را به صف دانلود اضافه می‌کند.",
     h2_title:"شتاب‌دهی دانلودر با HTTP/2",experimental:"(آزمایشی)",
-    h2_help:"H1 / رله معمولی برای دانلود فایل‌های بزرگ پایدارتر است و برای استفاده روزمره پیشنهاد می‌شود. H2 آزمایشی است: ممکن است بعضی دانلودهای کوچک یا متوسط را بهتر کند، اما چانک‌های بزرگ ممکن است تایم‌اوت شوند یا به H1 برگردند. H2 را فقط برای تست روشن کن. اگر دانلود کند، تایم‌اوت استریم، یا تلاش مجدد زیاد دیدی، خاموش نگهش دار.",
+    h2_help:"H2 روی بعضی لینک‌ها می‌تواند سریع‌تر باشد، چون از اتصال‌های multiplexed استفاده می‌کند؛ مخصوصاً برای CDNهای سریع یا چانک‌های کوچک‌تر. H1 معمولاً قابل‌پیش‌بینی‌تر است و وقتی H2 تایم‌اوت استریم، reconnect یا retry زیاد می‌دهد گزینه امن‌تری است. برای سرعت H2 را امتحان کن؛ اگر ناپایداری دیدی خاموشش کن.",
     download_controls:"کنترل‌های دانلود",controls_help:"تنظیمات صف و دانلودر کلی. این گزینه‌ها روی همه دانلودها اثر دارند، نه فقط یک فایل.",
     resume_all:"ادامه همه",pause_all:"مکث همه",save:"ذخیره",
     max_active:"حداکثر دانلود همزمان",max_active_help:"تعداد دانلودهایی که همزمان اجرا می‌شوند. مثال: ۲ یعنی دو دانلود فعال باشند و بقیه در صف بمانند.",
@@ -335,7 +370,7 @@ const I18N = {
     verify_size:"بررسی اندازه نهایی فایل",verify_size_help:"بعد از پایان دانلود، اندازه فایل نهایی بررسی می‌شود تا دانلود خراب یا ناقص مشخص شود.",
     active:"فعال",done:"تمام‌شده",total_speed:"سرعت کل",quota_used:"سهمیه مصرف‌شده",
     downloads:"دانلودها",no_downloads:"هنوز دانلودی وجود ندارد",
-    progress:"پیشرفت",speed:"سرعت",eta:"زمان باقی‌مانده",quota:"سهمیه",downloaded:"دانلودشده",total:"کل",chunks:"چانک‌ها",errors:"خطاها",
+    progress:"پیشرفت",speed:"سرعت",eta:"زمان باقی‌مانده",finished_in:"اتمام در",elapsed:"زمان سپری‌شده",quota:"سهمیه",downloaded:"دانلودشده",total:"کل",chunks:"چانک‌ها",errors:"خطاها",
     path:"مسیر",relay_requests:"درخواست‌های رله",relay_rx:"دریافت رله",relay_tx:"ارسال رله",chunk:"چانک",parallel:"موازی",
     priority:"اولویت",scheduled:"زمان‌بندی",limit:"محدودیت",unlimited:"نامحدود",error:"خطا",
     pause:"مکث",resume:"ادامه",cancel:"لغو",play:"پخش",open_folder:"باز کردن پوشه",remove:"حذف از لیست",delete_disk:"حذف از دیسک",
@@ -351,6 +386,7 @@ const I18N = {
 let previousDone = {};
 let h2Enabled = false;
 let userPinnedLog = {};
+let savedLogScroll = {};
 let firstRender = true;
 let lastSettingsPaint = 0;
 
@@ -430,16 +466,49 @@ function cls(s){return String(s||"").toLowerCase()}
 function esc(s){return String(s ?? "").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]))}
 function isVideo(name){return /\.(mp4|webm|mkv|mov|m4v|avi|ts)$/i.test(String(name||""))}
 
+function jobRouteText(j){
+  const logs = j.logs || [];
+  const hit = logs.find(l => String(l.message || "").includes("Downloader relay route:"));
+  if(!hit) return h2Enabled ? t("h2_enabled") : t("h2_disabled");
+
+  const msg = String(hit.message || "");
+  if(msg.includes("H2 preferred")) return "H2 USED";
+  if(msg.includes("H1 forced")) return "H1 USED";
+  return h2Enabled ? t("h2_enabled") : t("h2_disabled");
+}
+
+function jobRouteClass(j){
+  const txt = jobRouteText(j);
+  return txt.includes("H2") ? "done" : "error";
+}
+
+
 function rememberLogPositions(){
   document.querySelectorAll(".logs").forEach(box=>{
     const id=box.dataset.id;
-    userPinnedLog[id]=box.scrollTop+box.clientHeight>=box.scrollHeight-70;
+    const nearBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
+    userPinnedLog[id] = nearBottom;
+    savedLogScroll[id] = {
+      top: box.scrollTop,
+      height: box.scrollHeight,
+      nearBottom
+    };
   });
 }
+
 function restoreLogPositions(){
   document.querySelectorAll(".logs").forEach(box=>{
-    const id=box.dataset.id;
-    if(firstRender || userPinnedLog[id]===true) box.scrollTop=box.scrollHeight;
+    const id = box.dataset.id;
+    const prev = savedLogScroll[id];
+
+    if(firstRender || !prev || prev.nearBottom){
+      box.scrollTop = box.scrollHeight;
+      return;
+    }
+
+    // Keep the same visual position even if new log lines were appended.
+    const delta = box.scrollHeight - prev.height;
+    box.scrollTop = Math.max(0, prev.top + delta);
   });
   firstRender=false;
 }
@@ -528,9 +597,30 @@ function paintSettings(settings){
     speedLimit.value=mb ? mb.toFixed(1) : 0;
   }
 }
+
+function fmtDuration(sec){
+  sec = Math.max(0, Math.floor(Number(sec || 0)));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+}
+function jobTimeLabel(j){
+  if(j.status === "done") return t("finished_in");
+  if(j.status === "error" || j.status === "cancelled") return t("elapsed");
+  return t("eta");
+}
+function jobTimeValue(j){
+  const started = Number(j.started_at || 0);
+  const finished = Number(j.finished_at || 0);
+  if(j.status === "done" && started > 0 && finished > 0) return fmtDuration(finished - started);
+  if((j.status === "error" || j.status === "cancelled") && started > 0) return fmtDuration((finished || Date.now()/1000) - started);
+  return j.eta || "-";
+}
+
 function jobHtml(j){
   const p=Number(j.percent||0);
-  const logs=(j.logs||[]).slice(-120).map(l=>`<div class="log ${esc(l.level)}">[${esc(l.t)}] ${esc(l.level)}: ${esc(l.message)}</div>`).join("");
+  const logs=(j.logs||[]).slice(-160).map(l=>`<div class="log ${esc(l.level)}"><span class="logTime">[${esc(l.t)}]</span> <span class="logLevel">${esc(l.level)}:</span> <span class="logMsg">${esc(l.message)}</span></div>`).join("");
   const canPlay=j.status==="done" && isVideo(j.filename);
   const scheduled=j.scheduled_at ? new Date(j.scheduled_at*1000).toLocaleString() : "-";
   const limit=j.speed_limit_bps ? fmt(j.speed_limit_bps)+"/s" : t("unlimited");
@@ -542,8 +632,8 @@ function jobHtml(j){
       </div>
       <div>
         <span class="status ${cls(j.status)}">${esc(statusText(j.status))}</span>
-        <span class="status ${h2Enabled ? "done" : "error"}" title="${h2Enabled ? esc(t("h2_on_title")) : esc(t("h2_off_title"))}">
-          ${h2Enabled ? esc(t("h2_enabled")) : esc(t("h2_disabled"))}
+        <span class="status ${jobRouteClass(j)}">
+          ${esc(jobRouteText(j))}
         </span>
       </div>
     </div>
@@ -551,7 +641,7 @@ function jobHtml(j){
     <div class="grid">
       <div class="metric"><div class="label">${t("progress")}</div><div class="value">${p.toFixed(1)}%</div></div>
       <div class="metric"><div class="label">${t("speed")}</div><div class="value">${fmt(j.speed)}/s</div></div>
-      <div class="metric"><div class="label">${t("eta")}</div><div class="value">${esc(j.eta)}</div></div>
+      <div class="metric"><div class="label">${esc(jobTimeLabel(j))}</div><div class="value">${esc(jobTimeValue(j))}</div></div>
       <div class="metric"><div class="label">${t("quota")}</div><div class="value">${j.quota_used}</div></div>
       <div class="metric"><div class="label">${t("downloaded")}</div><div class="value">${fmt(j.downloaded)}</div></div>
       <div class="metric"><div class="label">${t("total")}</div><div class="value">${fmt(j.total_size)}</div></div>
