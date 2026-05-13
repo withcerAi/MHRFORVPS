@@ -194,7 +194,12 @@ class DomainFronter:
             1, min(self._video_priority_parallel_relay, len(self._script_ids))
         )
         self._sid_blacklist: dict[str, float] = {}
-        self._blacklist_ttl = 20  # hard-disabled script TTL seconds
+        self._blacklist_ttl = self._cfg_int(
+            config,
+            "script_blacklist_ttl",
+            SCRIPT_BLACKLIST_TTL,
+            minimum=5,
+        )
         self._sid_failure_counts: dict[str, int] = {}
 
         # Runtime strike memory.
@@ -1319,7 +1324,9 @@ class DomainFronter:
             if self._h2_healer_task is None or self._h2_healer_task.done():
                 self._h2_healer_task = self._spawn(self._h2_healer_loop())
         # PATCH_H2_DELAYED_HEALER_END
-            self._spawn(self._h2_pool_healer())
+            # Disabled old aggressive 20s H2 pool healer.
+            # The delayed healer above now handles partial H2 pools with delay/cooldown.
+            # self._spawn(self._h2_pool_healer())
         # H1 container keepalive — runs unconditionally so the Apps Script
         # container never goes cold even when H2 is unavailable.  When H2 IS
         # active its _keepalive_loop skips the ping; they do not double-fire.
@@ -3245,11 +3252,14 @@ class DomainFronter:
 
     async def _read_http_response(self, reader: asyncio.StreamReader):
         """Read one HTTP response. Keep-alive safe (no read-until-EOF)."""
+        header_timeout = max(8.0, min(float(getattr(self, "_relay_timeout", 60.0)), 60.0))
+        body_timeout = max(20.0, min(float(getattr(self, "_relay_timeout", 60.0)), 120.0))
+        idle_timeout = max(2.0, min(float(getattr(self, "_relay_timeout", 60.0)) / 10.0, 10.0))
         raw = b""
         while b"\r\n\r\n" not in raw:
             if len(raw) > 65536:  # 64 KB header size limit
                 return 0, {}, b""
-            chunk = await asyncio.wait_for(reader.read(8192), timeout=8)
+            chunk = await asyncio.wait_for(reader.read(8192), timeout=header_timeout)
             if not chunk:
                 break
             raw += chunk
@@ -3303,7 +3313,7 @@ class DomainFronter:
             # No framing — short timeout read (keep-alive safe)
             while True:
                 try:
-                    chunk = await asyncio.wait_for(reader.read(65536), timeout=2)
+                    chunk = await asyncio.wait_for(reader.read(65536), timeout=idle_timeout)
                     if not chunk:
                         break
                     body += chunk
@@ -3332,7 +3342,7 @@ class DomainFronter:
 
         while True:
             while b"\r\n" not in buf:
-                data = await asyncio.wait_for(reader.read(8192), timeout=20)
+                data = await asyncio.wait_for(reader.read(8192), timeout=body_timeout)
                 if not data:
                     return result
                 buf += data
@@ -3355,7 +3365,7 @@ class DomainFronter:
                 # Do not block forever if the frontend keeps the connection open.
                 while b"\r\n\r\n" not in buf and buf != b"\r\n":
                     try:
-                        data = await asyncio.wait_for(reader.read(8192), timeout=2)
+                        data = await asyncio.wait_for(reader.read(8192), timeout=idle_timeout)
                     except asyncio.TimeoutError:
                         break
                     if not data:
@@ -3370,7 +3380,7 @@ class DomainFronter:
                 )
 
             while len(buf) < size + 2:
-                data = await asyncio.wait_for(reader.read(65536), timeout=20)
+                data = await asyncio.wait_for(reader.read(65536), timeout=body_timeout)
                 if not data:
                     result += buf[:size]
                     return result

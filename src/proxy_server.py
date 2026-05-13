@@ -2955,13 +2955,25 @@ class ProxyServer:
     ))
 
     def _is_telegram_ip(self, host: str) -> bool:
+        """
+        Return True if host is inside Telegram IP ranges.
+
+        Uses config telegram_cidrs first, then falls back to built-in Telegram CIDRs.
+        """
         try:
             ip = ipaddress.ip_address(str(host or "").strip("[]"))
-            return any(ip in net for net in self._TELEGRAM_CIDRS)
         except Exception:
             return False
 
-    # PATCH_TELEGRAM_TURBO_HELPERS
+        networks = list(getattr(self, "_telegram_networks", []) or [])
+        if not networks:
+            networks = list(getattr(self, "_TELEGRAM_CIDRS", []) or [])
+
+        try:
+            return any(ip in net for net in networks)
+        except Exception:
+            return False
+
     @staticmethod
     def _query_has(url: str, *names: str) -> bool:
         try:
@@ -2971,8 +2983,22 @@ class ProxyServer:
             return False
 
     def _is_telegram_traffic(self, url: str, host: str = "") -> bool:
+        """
+        Detect Telegram traffic using config telegram_hosts / telegram_cidrs.
+
+        Keeps old hardcoded behavior as fallback, but now user config is respected.
+        """
         h = (host or urlparse(url).hostname or "").lower().rstrip(".")
         u = str(url or "").lower()
+
+        configured_hosts = tuple(getattr(self, "_telegram_hosts", ()) or ())
+        if configured_hosts:
+            for item in configured_hosts:
+                item = str(item or "").lower().strip().lstrip(".").rstrip(".")
+                if not item:
+                    continue
+                if h == item or h.endswith("." + item):
+                    return True
 
         if h in {"telegram.org", "telegram.me", "t.me"}:
             return True
@@ -2982,6 +3008,7 @@ class ProxyServer:
             return True
         if self._is_telegram_ip(h):
             return True
+
         return False
 
     def _is_turbo_allowed(self, method: str, url: str, headers: dict | None, body: bytes) -> bool:

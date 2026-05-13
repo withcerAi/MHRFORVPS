@@ -393,9 +393,6 @@ class DashboardLogHandler(logging.Handler):
                 or is_http_error
             )
 
-            is_script_error = is_script_error_log_line(msg)
-            is_full_error = (not intentional_sabr_drop) and (is_full_error_log_line(msg, record.levelno) or is_error)
-
             # All / Live is a complete live stream.
             live_logs.append(msg)
 
@@ -620,110 +617,6 @@ def mark_optimizer_fingerprint(config):
     config["optimizer_config_changed"] = False
     config["optimizer_config_changed_reason"] = ""
     return config
-
-
-def optimizer_config_drift(config):
-    """
-    Return True only when the active optimizer state is really out of sync.
-
-    Rules:
-    - Do NOT drift on boolean true/false changes.
-    - Do NOT drift when user switches manual mode between basic/medium/ultra/download.
-      The values are compared against the selected mode inside runtime_profiles.json.
-    - DO drift when runtime_mode is auto, because Auto can tune values outside the
-      selected optimizer profile.
-    - DO drift when a non-boolean optimizer-managed value is manually changed and no
-      longer matches the selected manual runtime profile.
-    """
-    cfg = config or {}
-
-    # Old configs without optimizer mark should not be reported as changed.
-    saved_config = str(cfg.get("optimizer_config_fingerprint") or "").strip()
-    if not saved_config:
-        return False
-
-    mode = str(cfg.get("runtime_mode") or "basic").strip().lower()
-
-    # Auto mode is intentionally treated as "out of optimizer profile".
-    if mode == "auto" or bool(cfg.get("auto_tune_enabled", False)):
-        cfg["optimizer_config_changed_reason"] = "runtime mode is auto"
-        return True
-
-    manual_modes = {"basic", "medium", "ultra", "download"}
-    if mode not in manual_modes:
-        mode = "basic"
-
-    try:
-        profiles = load_json_file(RUNTIME_PROFILES_PATH)
-    except Exception:
-        cfg["optimizer_config_changed_reason"] = "runtime_profiles.json could not be loaded"
-        return True
-
-    if not isinstance(profiles, dict) or mode not in profiles:
-        cfg["optimizer_config_changed_reason"] = f"runtime profile '{mode}' is missing"
-        return True
-
-    expected = profiles.get(mode) or {}
-    if not isinstance(expected, dict):
-        cfg["optimizer_config_changed_reason"] = f"runtime profile '{mode}' is invalid"
-        return True
-
-    ignored_keys = {
-        # Mode switching should not count as config drift.
-        "runtime_mode",
-        "label",
-
-        # Boolean/switch-style keys are ignored by request.
-        "enable_batch",
-        "enable_sub_batch",
-        "video_prefetch_enabled",
-        "manifest_prefetch_enabled",
-        "video_passthrough_enabled",
-        "youtube_sabr_booster_enabled",
-        "turbo_mode_enabled",
-        "turbo_force_no_delay",
-        "turbo_skip_download_mode",
-        "telegram_mode_enabled",
-    }
-
-    # If H2 was disabled from dashboard, h2_connections becomes 0.
-    # That is a switch effect, not a manual optimizer value change.
-    if bool(cfg.get("h2_disabled_by_dashboard", False)):
-        ignored_keys.add("h2_connections")
-
-    def _norm(value):
-        if isinstance(value, float):
-            return round(value, 6)
-        if isinstance(value, list):
-            return [_norm(x) for x in value]
-        if isinstance(value, dict):
-            return {str(k): _norm(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
-        return value
-
-    for key in OPTIMIZER_MANAGED_KEYS:
-        if key in ignored_keys:
-            continue
-
-        if key not in expected:
-            continue
-
-        current_value = cfg.get(key)
-        expected_value = expected.get(key)
-
-        # Ignore booleans everywhere, even if a new boolean key is later added.
-        if isinstance(current_value, bool) or isinstance(expected_value, bool):
-            continue
-
-        if _norm(current_value) != _norm(expected_value):
-            cfg["optimizer_config_changed_reason"] = (
-                f"{key} changed from optimizer profile value "
-                f"{expected_value!r} to {current_value!r}"
-            )
-            return True
-
-    cfg["optimizer_config_changed_reason"] = ""
-    return False
-
 
 
 # PATCH_APPLY_SCRIPT_OPTIMIZER_MISSING_FUNC_START
