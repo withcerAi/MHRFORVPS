@@ -1860,9 +1860,16 @@ function render(s) {
 
   if (eh && eh.ok) {
     setHTML("exitNodeStatus", `<span class="pill good">Server: ONLINE</span><span class="pill info">${ehAge === null ? "-" : ehAge + "s ago"}</span>`);
-    kv("exitNodeStats", {
+     kv("exitNodeStats", {
       "Status": eh.status || "healthy",
       "Inflight": eh.inflight ?? "-",
+      "Active Requests": eh.memoryLimits?.activeRequests ?? "-",
+      "Oldest Active": eh.memoryLimits?.oldestActiveMs !== undefined
+        ? Math.round(Number(eh.memoryLimits.oldestActiveMs || 0) / 1000) + "s"
+        : "-",
+      "Hard Watchdog": eh.memoryLimits?.requestHardTimeoutMs !== undefined
+        ? Math.round(Number(eh.memoryLimits.requestHardTimeoutMs || 0) / 1000) + "s"
+        : "-",
       "Requests": eh.totalRequests ?? "-",
       "Errors": eh.totalErrors ?? "-",
       "Server Traffic In": fmtBytes(eh.totalBytesIn || 0),

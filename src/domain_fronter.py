@@ -874,6 +874,155 @@ class DomainFronter:
         status = self._raw_status(raw)
         return status in (429, 500, 502, 503, 504)
 
+
+    @staticmethod
+    def _is_websocket_request(method: str, url: str, headers: dict | None) -> bool:
+        """
+        Detect WebSocket upgrade requests before they enter GAS relay.
+
+        Google Apps Script / UrlFetchApp cannot tunnel real WebSocket traffic.
+        If these requests are relayed, they usually hang until relay timeout
+        and waste H1/H2/App Script capacity.
+        """
+        method = str(method or "GET").upper()
+        url_s = str(url or "")
+        url_l = url_s.lower()
+
+        if url_l.startswith("ws://") or url_l.startswith("wss://"):
+            return True
+
+        h = {}
+        for k, v in (headers or {}).items():
+            h[str(k).strip().lower()] = str(v or "").strip().lower()
+
+        upgrade = h.get("upgrade", "")
+        connection = h.get("connection", "")
+        sec_key = h.get("sec-websocket-key", "")
+        sec_ver = h.get("sec-websocket-version", "")
+        sec_proto = h.get("sec-websocket-protocol", "")
+
+        if upgrade == "websocket":
+            return True
+
+        if "upgrade" in connection and "websocket" in upgrade:
+            return True
+
+        if sec_key or sec_ver or sec_proto:
+            return True
+
+        host = DomainFronter._host_key(url_s)
+
+        # Known long-lived websocket endpoints that should never go through GAS.
+        if host in {
+            "irc-ws.chat.twitch.tv",
+            "pubsub-edge.twitch.tv",
+            "eventsub.wss.twitch.tv",
+        }:
+            return True
+
+        # Defensive: common websocket naming patterns.
+        if host.startswith("ws.") or host.startswith("wss.") or "-ws." in host:
+            return True
+
+        return False
+
+
+    @staticmethod
+    def _lower_headers(headers: dict | None) -> dict:
+        return {
+            str(k).strip().lower(): str(v or "").strip()
+            for k, v in (headers or {}).items()
+        }
+
+    @classmethod
+    def _non_relayable_reason(cls, method: str, url: str, headers: dict | None) -> str | None:
+        """
+        Detect protocols/endpoints that Google Apps Script UrlFetchApp cannot relay.
+
+        GAS relay is request/response HTTP only. It cannot tunnel:
+        - WebSocket upgrades
+        - CONNECT tunnels
+        - Server-Sent Events / long-lived event streams
+        - gRPC streaming/framed requests
+        """
+        method = str(method or "GET").upper()
+        url_s = str(url or "")
+        url_l = url_s.lower()
+        h = cls._lower_headers(headers)
+
+        host = cls._host_key(url_s)
+        connection = h.get("connection", "").lower()
+        upgrade = h.get("upgrade", "").lower()
+        accept = h.get("accept", "").lower()
+        content_type = h.get("content-type", "").lower()
+
+        if method == "CONNECT":
+            return "CONNECT tunnel is not relayable through GAS"
+
+        if url_l.startswith("ws://") or url_l.startswith("wss://"):
+            return "WebSocket URL is not relayable through GAS"
+
+        if upgrade == "websocket":
+            return "WebSocket upgrade is not relayable through GAS"
+
+        if "upgrade" in connection and upgrade:
+            return "HTTP upgrade is not relayable through GAS"
+
+        if (
+            h.get("sec-websocket-key")
+            or h.get("sec-websocket-version")
+            or h.get("sec-websocket-protocol")
+            or h.get("sec-websocket-extensions")
+        ):
+            return "WebSocket headers are not relayable through GAS"
+
+        # Known Twitch realtime endpoints.
+        if host in {
+            "irc-ws.chat.twitch.tv",
+            "pubsub-edge.twitch.tv",
+            "eventsub.wss.twitch.tv",
+            "hermes.twitch.tv",
+        }:
+            return "Known Twitch realtime endpoint is not relayable through GAS"
+
+        # Defensive websocket-ish hostnames.
+        if host.startswith("ws.") or host.startswith("wss.") or "-ws." in host:
+            return "WebSocket-like host is not relayable through GAS"
+
+        # Server-Sent Events / long-lived response streams.
+        if "text/event-stream" in accept or "text/event-stream" in content_type:
+            return "SSE/event-stream is not relayable through GAS"
+
+        # gRPC / grpc-web can be streaming or framed.
+        if "application/grpc" in content_type or "application/grpc-web" in content_type:
+            return "gRPC streaming is not relayable through GAS"
+
+        return None
+
+    def _blocked_realtime_response(self, reason: str, url: str) -> bytes:
+        """
+        Return raw HTTP response bytes for blocked realtime protocols.
+
+        Important:
+        This must return bytes. Returning False/dict breaks downstream code
+        because the rest of DomainFronter expects payload dicts or raw
+        HTTP response bytes.
+        """
+        body = (
+            "Blocked before GAS relay\n"
+            f"Host: {self._host_key(url)}\n"
+            f"Reason: {reason}\n"
+        ).encode("utf-8", errors="replace")
+
+        return (
+            "HTTP/1.1 403 Forbidden\r\n"
+            "Content-Type: text/plain; charset=utf-8\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n"
+            "X-MHR-Blocked: realtime-non-relayable\r\n"
+            "\r\n"
+        ).encode("ascii") + body
+
     @staticmethod
     def _host_key(url_or_host: str | None) -> str:
         """Return a stable routing key for a URL or host string."""
@@ -2005,6 +2154,17 @@ class DomainFronter:
 
         Returns a raw HTTP response (status + headers + body).
         """
+        blocked_reason = self._non_relayable_reason(method, url, headers)
+        if blocked_reason:
+            log.info(
+                "Realtime/non-relayable request blocked before GAS relay: method=%s host=%s reason=%s url=%s",
+                str(method or "GET").upper(),
+                self._host_key(url),
+                blocked_reason,
+                _short_url(url),
+            )
+            return self._blocked_realtime_response(blocked_reason, url)
+
         if not self._warmed:
             await self._warm_pool()
 
@@ -3339,6 +3499,18 @@ class DomainFronter:
         """Incrementally read chunked transfer-encoding."""
         result = b""
         max_body = self._max_response_body_bytes
+
+        # Local timeouts are required here too. _read_chunked() can be called
+        # independently from _read_http_response(), so it must not depend on
+        # body_timeout / idle_timeout variables from another function scope.
+        body_timeout = max(
+            20.0,
+            min(float(getattr(self, "_relay_timeout", 60.0)), 120.0),
+        )
+        idle_timeout = max(
+            2.0,
+            min(float(getattr(self, "_relay_timeout", 60.0)) / 10.0, 10.0),
+        )
 
         while True:
             while b"\r\n" not in buf:

@@ -30,6 +30,14 @@ const TIMEOUT_FAST_MS = Number(process.env.TIMEOUT_FAST_MS || 45000);
 const TIMEOUT_SLOW_MS = Number(process.env.TIMEOUT_SLOW_MS || 90000);
 const TIMEOUT_VIDEO_MS = Number(process.env.TIMEOUT_VIDEO_MS || 90000);
 
+// Hard watchdog for one relay request.
+// It must be slightly above video timeout. It prevents dead/stale requests
+// from occupying MAX_INFLIGHT forever after Apps Script/client disconnects.
+const REQUEST_HARD_TIMEOUT_MS = Number(
+  process.env.REQUEST_HARD_TIMEOUT_MS ||
+  Math.max(TIMEOUT_VIDEO_MS + 30000, 120000)
+);
+
 const MAX_SOCKETS = Number(process.env.MAX_SOCKETS || 64);
 const MAX_FREE_SOCKETS = Number(process.env.MAX_FREE_SOCKETS || 4);
 const MAX_INFLIGHT = Number(process.env.MAX_INFLIGHT || 48);
@@ -49,6 +57,11 @@ let totalErrors = 0;
 let totalBytesOut = 0;
 let totalBytesIn = 0;
 const startedAt = Date.now();
+
+// Tracks live relay jobs so aborted clients / stale upstream requests cannot
+// keep inflight slots forever.
+let requestSeq = 0;
+const activeRequests = new Map();
 
 // ===================== Headers =====================
 const BAD_HEADERS = new Set([
@@ -391,6 +404,113 @@ function relayWarn(kind, fields = {}) {
   console.warn(parts.join(' '));
 }
 
+function beginInflightGuard(req, res) {
+  const id = ++requestSeq;
+  const started = Date.now();
+
+  let released = false;
+  let proxyReqRef = null;
+
+  function ageMs() {
+    return Date.now() - started;
+  }
+
+  function destroyProxy(reason) {
+    if (!proxyReqRef || proxyReqRef.destroyed) return;
+    try {
+      proxyReqRef.destroy(new Error(reason || 'request_released'));
+    } catch {}
+  }
+
+  function release(reason, destroy = false) {
+    if (released) return false;
+
+    released = true;
+    activeRequests.delete(id);
+    inflight = Math.max(0, inflight - 1);
+
+    if (destroy) destroyProxy(reason);
+
+    relayWarn('inflight_release', {
+      id,
+      reason,
+      ageMs: ageMs(),
+      inflight,
+      active: activeRequests.size
+    });
+
+    return true;
+  }
+
+  const timer = setTimeout(() => {
+    relayWarn('request_watchdog_timeout', {
+      id,
+      ageMs: ageMs(),
+      inflight,
+      maxInflight: MAX_INFLIGHT,
+      hardTimeoutMs: REQUEST_HARD_TIMEOUT_MS
+    });
+
+    totalErrors++;
+    release('request_watchdog_timeout', true);
+
+    try {
+      if (!res.writableEnded && !res.headersSent) {
+        sendJson(res, 200, relayErrorDetailed(504, 'request_watchdog_timeout', 'stale_inflight_released', {
+          ageMs: ageMs(),
+          hardTimeoutMs: REQUEST_HARD_TIMEOUT_MS
+        }));
+      }
+    } catch {}
+  }, REQUEST_HARD_TIMEOUT_MS);
+
+  if (timer && typeof timer.unref === 'function') timer.unref();
+
+  activeRequests.set(id, {
+    id,
+    started,
+    release,
+    get ageMs() { return ageMs(); }
+  });
+
+  req.once('aborted', () => {
+    release('client_request_aborted', true);
+  });
+
+  req.once('close', () => {
+    // In Node.js, req.close can happen after the request body was read normally.
+    // Do not destroy healthy relay jobs on normal close. req.aborted is the
+    // reliable signal for a broken client upload.
+    if (!released && req.aborted) {
+      release('client_request_closed', true);
+    }
+  });
+
+  res.once('close', () => {
+    // Apps Script / client disconnected before we could reply.
+    if (!released && !res.writableEnded) {
+      release('client_response_closed', true);
+    }
+  });
+
+  return {
+    id,
+    setProxyReq(proxyReq) {
+      proxyReqRef = proxyReq;
+    },
+    release(reason, destroy = false) {
+      try { clearTimeout(timer); } catch {}
+      return release(reason, destroy);
+    },
+    get released() {
+      return released;
+    },
+    get ageMs() {
+      return ageMs();
+    }
+  };
+}
+
 function decodeBody(buffer, encoding) {
   const enc = String(encoding || '').trim().toLowerCase();
   if (!buffer || !buffer.length || !enc || enc === 'identity') return buffer;
@@ -554,6 +674,11 @@ const server = http.createServer((req, res) => {
         softLimitMB: MEMORY_SOFT_LIMIT_MB,
         hardLimitMB: MEMORY_HARD_LIMIT_MB,
         maxInflight: MAX_INFLIGHT,
+        requestHardTimeoutMs: REQUEST_HARD_TIMEOUT_MS,
+        activeRequests: activeRequests.size,
+        oldestActiveMs: activeRequests.size
+          ? Math.max(...Array.from(activeRequests.values()).map(x => x.ageMs || 0))
+          : 0,
         maxSockets: MAX_SOCKETS,
         maxFreeSockets: MAX_FREE_SOCKETS,
         maxRequestBody: MAX_REQUEST_BODY,
@@ -612,8 +737,10 @@ const server = http.createServer((req, res) => {
   inflight++;
   totalRequests++;
 
+  const life = beginInflightGuard(req, res);
+
   function finishEarly(status, obj) {
-    inflight = Math.max(0, inflight - 1);
+    life.release('finish_early');
     return sendJson(res, status, obj);
   }
 
@@ -747,9 +874,9 @@ const server = http.createServer((req, res) => {
       let finished = false;
 
       function done(httpStatus, obj) {
-        if (finished) return;
+        if (finished || life.released) return;
         finished = true;
-        inflight = Math.max(0, inflight - 1);
+        life.release('done');
 
         try {
           const bytes = Buffer.byteLength(JSON.stringify(obj || {}));
@@ -915,6 +1042,8 @@ const server = http.createServer((req, res) => {
           }));
         });
       });
+
+      life.setProxyReq(proxyReq);
 
       proxyReq.setTimeout(timeoutMs, () => {
         const elapsed = nowMs() - reqStarted;
@@ -1087,6 +1216,7 @@ server.listen(PORT, HOST, () => {
   console.log(`TIMEOUT_FAST_MS=${TIMEOUT_FAST_MS}`);
   console.log(`TIMEOUT_SLOW_MS=${TIMEOUT_SLOW_MS}`);
   console.log(`TIMEOUT_VIDEO_MS=${TIMEOUT_VIDEO_MS}`);
+  console.log(`REQUEST_HARD_TIMEOUT_MS=${REQUEST_HARD_TIMEOUT_MS}`);
   console.log(`MEMORY_GUARD_ENABLED=${MEMORY_GUARD_ENABLED}`);
   console.log(`MEMORY_SOFT_LIMIT_MB=${MEMORY_SOFT_LIMIT_MB}`);
   console.log(`MEMORY_HARD_LIMIT_MB=${MEMORY_HARD_LIMIT_MB}`);
