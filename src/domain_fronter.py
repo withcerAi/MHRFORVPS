@@ -920,9 +920,17 @@ class DomainFronter:
         }:
             return True
 
-        # Defensive: common websocket naming patterns.
-        if host.startswith("ws.") or host.startswith("wss.") or "-ws." in host:
-            return True
+        # PATCH_REMOVE_WS_HOSTNAME_FALSE_POSITIVE_HELPER_START
+        # Do not classify a request as WebSocket only because the hostname
+        # looks websocket-ish. Real WebSocket is already detected above by:
+        # - ws:// / wss:// URL scheme
+        # - Upgrade: websocket
+        # - Sec-WebSocket-* headers
+        #
+        # Old removed rule:
+        # if host.startswith("ws.") or host.startswith("wss.") or "-ws." in host:
+        #     return True
+        # PATCH_REMOVE_WS_HOSTNAME_FALSE_POSITIVE_HELPER_END
 
         return False
 
@@ -985,13 +993,33 @@ class DomainFronter:
         }:
             return "Known Twitch realtime endpoint is not relayable through GAS"
 
-        # Defensive websocket-ish hostnames.
-        if host.startswith("ws.") or host.startswith("wss.") or "-ws." in host:
-            return "WebSocket-like host is not relayable through GAS"
+        # PATCH_REMOVE_WS_HOSTNAME_FALSE_POSITIVE_START
+        # Do not block only because the hostname looks websocket-ish.
+        # Some normal HTTP(S) hosts can contain "ws." or "-ws." in their name.
+        # Real WebSocket traffic is still blocked above by:
+        # - ws:// / wss:// URL scheme
+        # - Upgrade: websocket
+        # - Sec-WebSocket-* headers
+        #
+        # Old behavior caused false positives such as:
+        # https://normal-ws.example.com/ -> 403 X-MHR-Blocked
+        #
+        # Old removed rule:
+        # if host.startswith("ws.") or host.startswith("wss.") or "-ws." in host:
+        #     return "WebSocket-like host is not relayable through GAS"
+        # PATCH_REMOVE_WS_HOSTNAME_FALSE_POSITIVE_END
 
-        # Server-Sent Events / long-lived response streams.
-        if "text/event-stream" in accept or "text/event-stream" in content_type:
-            return "SSE/event-stream is not relayable through GAS"
+        # PATCH_ENABLE_SSE_CHATGPT_START
+        # Server-Sent Events / text/event-stream:
+        # ChatGPT and several modern web apps use SSE for response streaming.
+        # Blocking it here causes ChatGPT to send the message but fail while
+        # receiving the answer. GAS may not preserve true streaming, but the
+        # request should still be allowed to pass as normal HTTP.
+        #
+        # Old behavior:
+        # if "text/event-stream" in accept or "text/event-stream" in content_type:
+        #     return "SSE/event-stream is not relayable through GAS"
+        # PATCH_ENABLE_SSE_CHATGPT_END
 
         # gRPC / grpc-web can be streaming or framed.
         if "application/grpc" in content_type or "application/grpc-web" in content_type:
